@@ -517,7 +517,4 @@ def sync_jira():
 
 
 if __name__ == "__main__":
-    print("\n  ===========================================")
-    print("   JIRA BOARD - http://localhost:5000")
-    print("  ===========================================\n")
     app.run(debug=True, port=5000)

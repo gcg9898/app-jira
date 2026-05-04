@@ -364,7 +364,8 @@ def setup_tray():
 
 
 def main():
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     # Register global hotkey
     keyboard.add_hotkey("ctrl+alt+n", request_popup)
 

@@ -111,19 +111,52 @@ class LauncherApp:
         self.root.configure(bg="#1a1a2e")
         self.root.resizable(False, True)
 
-        w, h = 420, 620
+        w, h = 440, 620
         x = (self.root.winfo_screenwidth() - w) // 2
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self.root.minsize(440, 400)
+
+        # ── Scrollable container ──────────────────────────────────────
+        outer = tk.Frame(self.root, bg="#1a1a2e")
+        outer.pack(fill="both", expand=True)
+
+        self._canvas = tk.Canvas(outer, bg="#1a1a2e", highlightthickness=0)
+        scrollbar = tk.Scrollbar(outer, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        # Inner frame that holds all widgets
+        inner = tk.Frame(self._canvas, bg="#1a1a2e")
+        self._canvas_window = self._canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_configure(event):
+            self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+        def _on_canvas_resize(event):
+            self._canvas.itemconfig(self._canvas_window, width=event.width)
+
+        inner.bind("<Configure>", _on_inner_configure)
+        self._canvas.bind("<Configure>", _on_canvas_resize)
+
+        # Mouse wheel scroll (Windows)
+        def _on_mousewheel(event):
+            self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Alias so all .pack() calls below go into inner
+        root = inner
 
         # Title
-        tk.Label(self.root, text="JiraBoard", bg="#1a1a2e", fg="#16c79a",
+        tk.Label(root, text="JiraBoard", bg="#1a1a2e", fg="#16c79a",
                  font=("Segoe UI", 18, "bold")).pack(pady=(16, 4))
-        tk.Label(self.root, text="Panel de Control", bg="#1a1a2e", fg="#888",
+        tk.Label(root, text="Panel de Control", bg="#1a1a2e", fg="#888",
                  font=("Segoe UI", 10)).pack(pady=(0, 16))
 
         # Status frame
-        status_frame = tk.Frame(self.root, bg="#0f0f23", padx=16, pady=12,
+        status_frame = tk.Frame(root, bg="#0f0f23", padx=16, pady=12,
                                 highlightbackground="#2a2a4a", highlightthickness=1)
         status_frame.pack(fill="x", padx=20, pady=(0, 12))
 
@@ -155,7 +188,7 @@ class LauncherApp:
                  font=("Segoe UI", 8)).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         # DB stats frame
-        db_frame = tk.Frame(self.root, bg="#0f0f23", padx=16, pady=12,
+        db_frame = tk.Frame(root, bg="#0f0f23", padx=16, pady=12,
                             highlightbackground="#2a2a4a", highlightthickness=1)
         db_frame.pack(fill="x", padx=20, pady=(0, 12))
 
@@ -187,7 +220,7 @@ class LauncherApp:
         self.db_cols.grid(row=4, column=1, sticky="w", padx=(8, 0))
 
         # Credentials frame
-        cred_frame = tk.Frame(self.root, bg="#0f0f23", padx=16, pady=12,
+        cred_frame = tk.Frame(root, bg="#0f0f23", padx=16, pady=12,
                               highlightbackground="#2a2a4a", highlightthickness=1)
         cred_frame.pack(fill="x", padx=20, pady=(0, 12))
 
@@ -241,7 +274,7 @@ class LauncherApp:
         save_cred_btn.grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         # Buttons
-        btn_frame = tk.Frame(self.root, bg="#1a1a2e")
+        btn_frame = tk.Frame(root, bg="#1a1a2e")
         btn_frame.pack(fill="x", padx=20, pady=(4, 16))
 
         tk.Button(btn_frame, text="Abrir Board Web", bg="#4A90D9", fg="#fff",
@@ -375,7 +408,8 @@ class LauncherApp:
 
 
 def main():
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     LauncherApp()
 
 
