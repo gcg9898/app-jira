@@ -1,0 +1,22 @@
+# Credenciales y configuración sensible
+.env
+
+# Base de datos local
+board.db
+
+# Logs
+flask.log
+*.log
+
+# Capturas de pantalla generadas
+screenshots/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# VS Code
+.vscode/
