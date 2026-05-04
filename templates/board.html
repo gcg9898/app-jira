@@ -11,7 +11,8 @@
             background: #0f0f23;
             color: #e0e0e0;
             height: 100vh;
-            overflow: hidden;
+            overflow-y: auto;
+            overflow-x: hidden;
         }
 
         /* Header */
@@ -53,9 +54,8 @@
             display: flex;
             gap: 16px;
             padding: 20px;
-            height: calc(100vh - 100px);
+            align-items: stretch;
             overflow-x: auto;
-            align-items: flex-start;
         }
 
         /* Columns */
@@ -67,7 +67,6 @@
             flex-shrink: 0;
             display: flex;
             flex-direction: column;
-            max-height: 100%;
             border: 1px solid #2a2a4a;
         }
         .column-header {
@@ -92,7 +91,6 @@
         }
         .column-tasks {
             padding: 10px;
-            overflow-y: auto;
             flex: 1;
             min-height: 60px;
         }
@@ -548,7 +546,7 @@
                 <div class="tickets-section">
                     ${tickets.map(tk => `
                         <div class="ticket-item ${tk.done ? 'done' : ''}">
-                            <input type="checkbox" ${tk.done ? 'checked' : ''} onchange="toggleTicket(${tk.id}, this.checked)">
+                            <input type="checkbox" ${tk.done ? 'checked' : ''} data-title="${escapeHtml(tk.title)}" onchange="toggleTicket(${tk.id}, this.checked, this.dataset.title)">
                             <span>${escapeHtml(tk.title)}</span>
                             <button style="margin-left:auto;background:none;border:none;color:#666;cursor:pointer;font-size:0.7rem;" onclick="deleteTicket(${tk.id})">✕</button>
                         </div>
@@ -706,11 +704,11 @@
             loadBoard();
         }
 
-        async function toggleTicket(ticketId, done) {
+        async function toggleTicket(ticketId, done, title) {
             await fetch(`/api/tickets/${ticketId}`, {
                 method: "PUT",
                 headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({ done: done ? 1 : 0, title: "" })
+                body: JSON.stringify({ done: done ? 1 : 0, title: title || "" })
             });
             loadBoard();
         }
