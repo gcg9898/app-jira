@@ -1,0 +1,81 @@
+# Jira Board App
+
+Panel de gestión de tareas de Jira estilo Trello con bandeja del sistema y atajo de teclado global.
+
+## Qué hace
+
+- **Tablero web** (Flask + SQLite) accesible en `http://localhost:5000` con columnas tipo Kanban.
+- **Sincronización con Jira**: importa tus incidencias desde un filtro de Jira y las muestra en el tablero.
+- **Tray app**: icono en la bandeja del sistema con acceso rápido para crear tareas.
+- **Hotkey global `Ctrl+Alt+N`**: abre un popup para crear una nueva tarea desde cualquier ventana.
+- **Launcher**: panel de control para arrancar/parar Flask y la tray app, ver estado y configurar credenciales.
+
+## Requisitos
+
+- [uv](https://github.com/astral-sh/uv) instalado y en el PATH.
+- Python gestionado por uv (no necesitas instalarlo manualmente).
+- Google Chrome + ChromeDriver para las capturas de pantalla automáticas (gestionado por `webdriver-manager`).
+
+## Configuración inicial
+
+Crea un fichero `.env` en la raíz del proyecto con tus credenciales de Jira:
+
+```env
+JIRA_USER=tu_usuario
+JIRA_PASS=tu_contraseña
+JIRA_BASE_URL=https://tu-instancia.jira.com
+JIRA_FILTER_ID=12345
+```
+
+> También puedes rellenar estos campos directamente desde el launcher sin editar el fichero a mano.
+
+## Arrancar la aplicación
+
+### Opción 1 — Doble clic (recomendado)
+
+Ejecutar **`JiraBoard.vbs`** (no abre ventana de consola).
+
+### Opción 2 — Desde terminal
+
+```bat
+JiraBoard.bat
+```
+
+### Opción 3 — Manual con uv
+
+```bash
+uv run --with flask --with requests --with selenium --with webdriver-manager --with keyboard --with pystray --with pillow --link-mode=copy python launcher.py
+```
+
+## Uso
+
+| Acción | Cómo |
+|--------|------|
+| Abrir el tablero web | Botón **"Abrir Board Web"** en el launcher o ir a `http://localhost:5000` |
+| Sincronizar con Jira | Botón **"Sync"** en el tablero web |
+| Crear tarea rápida | Atajo **`Ctrl+Alt+N`** desde cualquier ventana |
+| Ver logs de Flask | Botón **"Logs"** en el launcher |
+| Cambiar credenciales | Sección **"Credenciales"** en el launcher → Guardar |
+| Parar todo | Botón **"Salir"** en el launcher |
+
+## Estructura de ficheros
+
+```
+app jira/
+├── app.py           # Backend Flask (API + lógica de sincronización con Jira)
+├── launcher.py      # Panel de control (tkinter)
+├── tray_app.py      # Icono de bandeja + hotkey Ctrl+Alt+N
+├── templates/
+│   └── board.html   # Frontend tablero Kanban (SPA)
+├── JiraBoard.bat    # Lanzador con consola
+├── JiraBoard.vbs    # Lanzador silencioso (sin consola)
+├── .env             # Credenciales (NO incluido en el repositorio)
+├── board.db         # Base de datos SQLite (NO incluida en el repositorio)
+└── screenshots/     # Capturas automáticas de Jira (NO incluidas)
+```
+
+## Notas
+
+- El fichero `.env`, `board.db` y `screenshots/` están en `.gitignore` y **no se suben al repositorio**.
+- El tablero funciona aunque no haya conexión a Jira, usando los datos locales de `board.db`.
+- La primera sincronización puede tardar unos segundos dependiendo del número de incidencias en el filtro.
