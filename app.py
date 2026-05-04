@@ -3,6 +3,7 @@ JIRA BOARD - Tablero tipo Trello con sincronización Jira
 Ejecutar: uv run --with flask --with requests app.py
 """
 import os
+import sys
 import json
 import sqlite3
 from datetime import datetime
@@ -14,15 +15,23 @@ import requests as req_lib
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-app = Flask(__name__)
-DB_PATH = Path(__file__).parent / "board.db"
-SCREENSHOTS_DIR = Path(__file__).parent / "screenshots"
+# Frozen (PyInstaller) vs normal execution path resolution
+if getattr(sys, 'frozen', False):
+    _BUNDLE_DIR = Path(sys._MEIPASS)          # bundled read-only assets
+    _DATA_DIR = Path(sys.executable).parent  # user data next to .exe
+else:
+    _BUNDLE_DIR = Path(__file__).parent
+    _DATA_DIR = Path(__file__).parent
+
+app = Flask(__name__, template_folder=str(_BUNDLE_DIR / 'templates'))
+DB_PATH = _DATA_DIR / "board.db"
+SCREENSHOTS_DIR = _DATA_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURACIÓN JIRA (desde .env)
 # ═══════════════════════════════════════════════════════════════
-ENV_PATH = Path(__file__).parent / ".env"
+ENV_PATH = _DATA_DIR / ".env"
 
 
 def _load_env():

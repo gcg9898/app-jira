@@ -14,7 +14,10 @@ from pathlib import Path
 from urllib.request import urlopen
 from urllib.error import URLError
 
-BASE_DIR = Path(__file__).parent
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "board.db"
 ENV_PATH = BASE_DIR / ".env"
 UV_CMD = "uv"
@@ -46,9 +49,13 @@ FLASK_LOG = BASE_DIR / "flask.log"
 def start_flask():
     global flask_proc
     log_fh = open(FLASK_LOG, "a", encoding="utf-8", errors="replace")
+    if getattr(sys, 'frozen', False):
+        cmd = [sys.executable, "--mode=flask"]
+    else:
+        cmd = [UV_CMD, "run", "--with", "flask", "--with", "requests", "--with", "selenium",
+               "--with", "webdriver-manager", "--link-mode=copy", "python", "app.py"]
     flask_proc = subprocess.Popen(
-        [UV_CMD, "run", "--with", "flask", "--with", "requests", "--with", "selenium",
-         "--with", "webdriver-manager", "--link-mode=copy", "python", "app.py"],
+        cmd,
         cwd=str(BASE_DIR),
         stdout=log_fh, stderr=log_fh,
         creationflags=subprocess.CREATE_NO_WINDOW,
@@ -57,9 +64,13 @@ def start_flask():
 
 def start_tray():
     global tray_proc
+    if getattr(sys, 'frozen', False):
+        cmd = [sys.executable, "--mode=tray"]
+    else:
+        cmd = [UV_CMD, "run", "--with", "keyboard", "--with", "pystray", "--with", "pillow",
+               "--with", "requests", "--link-mode=copy", "python", "tray_app.py"]
     tray_proc = subprocess.Popen(
-        [UV_CMD, "run", "--with", "keyboard", "--with", "pystray", "--with", "pillow",
-         "--with", "requests", "--link-mode=copy", "python", "tray_app.py"],
+        cmd,
         cwd=str(BASE_DIR),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW,
@@ -351,17 +362,22 @@ class LauncherApp:
                                    capture_output=True)
                 except Exception:
                     pass
-        # Also kill any remaining python processes spawned by us
-        try:
-            subprocess.run(["taskkill", "/F", "/IM", "python.exe"],
-                           creationflags=subprocess.CREATE_NO_WINDOW,
-                           capture_output=True)
-        except Exception:
-            pass
+        # Only kill loose python.exe when not running as compiled .exe
+        if not getattr(sys, 'frozen', False):
+            try:
+                subprocess.run(["taskkill", "/F", "/IM", "python.exe"],
+                               creationflags=subprocess.CREATE_NO_WINDOW,
+                               capture_output=True)
+            except Exception:
+                pass
         self.root.destroy()
         os._exit(0)
 
 
-if __name__ == "__main__":
+def main():
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     LauncherApp()
+
+
+if __name__ == "__main__":
+    main()
