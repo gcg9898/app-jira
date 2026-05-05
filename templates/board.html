@@ -451,10 +451,13 @@
         // CARGAR DATOS
         // ═══════════════════════════════════════════
         async function loadBoard() {
+            const scrollX = window.scrollX;
+            const scrollY = window.scrollY;
             const resp = await fetch(`/api/columns?sort=${currentSort}`);
             boardData = await resp.json();
             renderFilterBar();
             renderBoard();
+            window.scrollTo(scrollX, scrollY);
         }
 
         function toggleSort() {
