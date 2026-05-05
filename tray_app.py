@@ -366,8 +366,8 @@ def setup_tray():
 def main():
     if sys.stdout is not None:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    # Register global hotkey (suppress=True evita que se propague y cambie idioma)
-    keyboard.add_hotkey("ctrl+alt+n", request_popup, suppress=True)
+    # Register global hotkey
+    keyboard.add_hotkey("ctrl+alt+n", request_popup)
 
     print("  Jira Board Tray - Activo")
     print("  Hotkey: Ctrl+Alt+N para crear tarea")
