@@ -18,7 +18,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Frozen (PyInstaller) vs normal execution path resolution
 if getattr(sys, 'frozen', False):
     _BUNDLE_DIR = Path(sys._MEIPASS)          # bundled read-only assets
-    _DATA_DIR = Path(sys.executable).parent  # user data next to .exe
+    # Allow overriding data dir via env var (for running from TEMP after update)
+    _env_data = os.environ.get("JIRABOARD_DATA_DIR")
+    _DATA_DIR = Path(_env_data) if _env_data else Path(sys.executable).parent
 else:
     _BUNDLE_DIR = Path(__file__).parent
     _DATA_DIR = Path(__file__).parent

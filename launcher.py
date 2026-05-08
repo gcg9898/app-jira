@@ -337,25 +337,30 @@ powershell -Command "Unblock-File -Path '{exe_path}'; Remove-Item -Path '{exe_pa
 REM Pin file as "Always keep on this device" for OneDrive
 echo Pineando archivo en disco local (attrib +P -U)... >> "{log_path}"
 attrib -U +P "{exe_path}" >> "{log_path}" 2>&1
-echo Attrib result: %errorlevel% >> "{log_path}"
 
-REM Wait for OneDrive sync and file to be fully available locally
-echo Esperando que el archivo este disponible localmente (8s)... >> "{log_path}"
-ping 127.0.0.1 -n 9 > nul
+REM Force Windows to fully read and cache the file (triggers Defender scan early)
+echo Forzando lectura completa del exe para cache... >> "{log_path}"
+powershell -Command "[IO.File]::ReadAllBytes('{exe_path}').Length" >> "{log_path}" 2>&1
 
-REM Verify the file is actually available (not a cloud placeholder)
-echo Verificando disponibilidad local... >> "{log_path}"
-powershell -Command "$item = Get-Item '{exe_path}'; $attr = $item.Attributes.ToString(); Write-Output \\"Attributes: $attr\\"; $size = $item.Length; Write-Output \\"Size: $size\\"; if($size -lt 1000){{ Write-Output 'WARN: archivo parece ser placeholder de OneDrive'; exit 1 }}" >> "{log_path}" 2>&1
-if errorlevel 1 (
-    echo WARN: Esperando 10s adicionales para OneDrive... >> "{log_path}"
-    ping 127.0.0.1 -n 11 > nul
-)
+REM Wait for OneDrive sync and Defender scan to complete
+echo Esperando sincronizacion (15s)... >> "{log_path}"
+ping 127.0.0.1 -n 16 > nul
 
-echo Lanzando exe actualizado... >> "{log_path}"
+REM Copy exe to a LOCAL temp location to bypass OneDrive filter driver
+set "LOCAL_EXE=%TEMP%\\JiraBoard_local.exe"
+echo Copiando exe a ubicacion local: %LOCAL_EXE% >> "{log_path}"
+copy /B /Y "{exe_path}" "%LOCAL_EXE%" >nul 2>>"{log_path}"
+powershell -Command "Unblock-File -Path '%LOCAL_EXE%'; Remove-Item -Path '%LOCAL_EXE%:Zone.Identifier' -ErrorAction SilentlyContinue" >> "{log_path}" 2>&1
 
-REM Launch updated exe
-start "" "{exe_path}"
+REM Set data dir to original exe location so DB/screenshots are found
+set "JIRABOARD_DATA_DIR={exe_path.parent}"
+echo DATA_DIR: %JIRABOARD_DATA_DIR% >> "{log_path}"
+
+REM Launch from local copy (bypasses OneDrive ReparsePoint filter driver)
+echo Lanzando desde copia local... >> "{log_path}"
+start "" "%LOCAL_EXE%"
 echo Exe lanzado OK >> "{log_path}"
+REM The local copy will find data at the original exe's parent dir
 
 :cleanup
 del "%~f0"
