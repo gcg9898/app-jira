@@ -304,6 +304,14 @@ class LauncherApp:
 
     def open_new_task(self):
         self.root.iconify()
+        if getattr(sys, 'frozen', False):
+            subprocess.Popen([sys.executable, "--mode=newtask"],
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            subprocess.Popen([UV_CMD, "run", "--with", "requests", "--with", "keyboard",
+                              "--with", "pystray", "--with", "Pillow",
+                              "python", str(BASE_DIR / "tray_app.py"), "--popup"],
+                             creationflags=subprocess.CREATE_NO_WINDOW)
 
     def update_status(self):
         threading.Thread(target=self._poll_status, daemon=True).start()

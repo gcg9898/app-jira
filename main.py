@@ -5,6 +5,7 @@ Usage:
   JiraBoard.exe              -> launcher panel (default)
   JiraBoard.exe --mode=flask -> Flask server
   JiraBoard.exe --mode=tray  -> Tray app + hotkey
+  JiraBoard.exe --mode=newtask -> New task popup only
 """
 import sys
 import multiprocessing
@@ -38,5 +39,9 @@ if __name__ == "__main__":
         run_flask()
     elif mode == "tray":
         run_tray()
+    elif mode == "newtask":
+        from tray_app import TaskPopup
+        popup = TaskPopup()
+        popup.show()
     else:
         run_launcher()

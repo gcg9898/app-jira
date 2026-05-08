@@ -74,12 +74,19 @@ class ScreenshotSelector:
         self.start_y = 0
         self.rect = None
 
+        # Capture full screen BEFORE showing overlay (physical pixels)
+        self.full_screenshot = ImageGrab.grab()
+
         self.root = tk.Tk()
         self.root.attributes("-fullscreen", True)
         self.root.attributes("-alpha", 0.3)
         self.root.attributes("-topmost", True)
         self.root.configure(bg="black")
         self.root.config(cursor="crosshair")
+
+        # Ratio between physical screenshot pixels and logical screen size
+        self.scale_x = self.full_screenshot.width / self.root.winfo_screenwidth()
+        self.scale_y = self.full_screenshot.height / self.root.winfo_screenheight()
 
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
@@ -112,9 +119,14 @@ class ScreenshotSelector:
         self.root.destroy()
 
         if (x2 - x1) > 10 and (y2 - y1) > 10:
-            import time
-            time.sleep(0.3)
-            img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+            # Crop from pre-captured screenshot using scaled coordinates
+            crop_box = (
+                int(x1 * self.scale_x),
+                int(y1 * self.scale_y),
+                int(x2 * self.scale_x),
+                int(y2 * self.scale_y)
+            )
+            img = self.full_screenshot.crop(crop_box)
             filename = f"capture_{uuid.uuid4().hex[:8]}.png"
             filepath = SCREENSHOTS_DIR / filename
             img.save(str(filepath))
@@ -388,4 +400,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--popup" in sys.argv:
+        popup = TaskPopup()
+        popup.show()
+    else:
+        main()

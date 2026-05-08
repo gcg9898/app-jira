@@ -57,8 +57,9 @@ JIRA_PASS = _env.get("JIRA_PASS", "")
 # BASE DE DATOS
 # ═══════════════════════════════════════════════════════════════
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -80,6 +81,7 @@ def init_db():
             jira_key TEXT DEFAULT '',
             jira_status TEXT DEFAULT '',
             priority TEXT DEFAULT 'Normal',
+            priority_override TEXT DEFAULT '',
             labels TEXT DEFAULT '',
             last_comment TEXT DEFAULT '',
             screenshot TEXT DEFAULT '',
@@ -125,6 +127,8 @@ def migrate_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN jira_updated TEXT DEFAULT ''")
     if "link" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN link TEXT DEFAULT ''")
+    if "priority_override" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN priority_override TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
@@ -141,7 +145,11 @@ def index():
 
 @app.route("/screenshots/<path:filename>")
 def serve_screenshot(filename):
-    return send_from_directory(SCREENSHOTS_DIR, filename)
+    response = send_from_directory(SCREENSHOTS_DIR, filename)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.route("/api/upload-screenshot", methods=["POST"])
@@ -198,6 +206,10 @@ def get_columns():
                 task_dict["screenshot"] = ""
             if "jira_updated" not in task_dict:
                 task_dict["jira_updated"] = ""
+            # Use priority_override if set, otherwise jira priority
+            override = task_dict.get("priority_override", "") or ""
+            if override:
+                task_dict["priority"] = override
             task_dict["tickets"] = [dict(tk) for tk in tickets]
             tasks_list.append(task_dict)
 
@@ -279,10 +291,24 @@ def update_task(task_id):
     conn = get_db()
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
     conn.execute(
-        """UPDATE tasks SET title=?, description=?, priority=?, labels=?, column_id=?, position=?, updated_at=?
+        """UPDATE tasks SET title=?, description=?, priority=?, priority_override=?, labels=?, column_id=?, position=?, updated_at=?
            WHERE id=?""",
         (data.get("title"), data.get("description", ""), data.get("priority", "Normal"),
-         data.get("labels", ""), data.get("column_id"), data.get("position", 0), now, task_id)
+         data.get("priority_override", ""), data.get("labels", ""), data.get("column_id"), data.get("position", 0), now, task_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/tasks/<int:task_id>/priority", methods=["PUT"])
+def update_task_priority(task_id):
+    data = request.json
+    conn = get_db()
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    conn.execute(
+        "UPDATE tasks SET priority_override=?, updated_at=? WHERE id=?",
+        (data.get("priority", ""), now, task_id)
     )
     conn.commit()
     conn.close()
@@ -459,23 +485,53 @@ def sync_jira():
     conn.commit()
     conn.close()
 
-    # Take screenshots with Selenium
-    screenshots_taken = 0
+    # Take screenshots asynchronously in background thread
+    issue_keys = [issue["key"] for issue in all_issues]
+    import threading
+    t = threading.Thread(target=_take_screenshots_background, args=(issue_keys,), daemon=True)
+    t.start()
+
+    return jsonify({"ok": True, "total": len(all_issues), "imported": imported, "screenshots_async": True})
+
+
+def _take_screenshots_background(issue_keys):
+    """Take screenshots in background using multiple Selenium workers."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import math
+
+    num_workers = min(4, math.ceil(len(issue_keys) / 5))
+    if num_workers == 0:
+        return
+
+    chunks = [issue_keys[i::num_workers] for i in range(num_workers)]
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(_screenshot_worker, chunk) for chunk in chunks]
+        for f in as_completed(futures):
+            try:
+                f.result()
+            except Exception as e:
+                print(f"  Screenshot worker error: {e}")
+
+
+def _screenshot_worker(keys):
+    """Single Selenium worker that processes a list of Jira keys."""
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    import time as _time
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1200,2400")
+    chrome_options.add_argument("--ignore-certificate-errors")
+
+    driver = None
     try:
-        from selenium import webdriver
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        import time as _time
-
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--window-size=1200,900")
-        chrome_options.add_argument("--ignore-certificate-errors")
-
         driver = webdriver.Chrome(options=chrome_options)
         driver.get(f"{JIRA_BASE_URL}/login.jsp")
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "login-form-username")))
@@ -484,36 +540,44 @@ def sync_jira():
         driver.find_element(By.ID, "login-form-submit").click()
         WebDriverWait(driver, 10).until(lambda d: "login" not in d.current_url.lower())
 
-        conn2 = get_db()
-        for issue in all_issues:
-            key = issue["key"]
+        conn = get_db()
+        for key in keys:
             try:
-                driver.get(f"{JIRA_BASE_URL}/browse/{key}?focusedId=comments&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel")
-                _time.sleep(3)
-                # Scroll to the very last comment to capture latest activity
+                # actionOrder=asc en la URL fuerza orden ascendente (más antiguo arriba,
+                # más reciente al final) sólo para esta carga, sin tocar las preferencias del usuario
+                driver.get(f"{JIRA_BASE_URL}/browse/{key}?focusedId=comments&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel&actionOrder=asc")
+                # Wait for the activity section to load
+                try:
+                    WebDriverWait(driver, 8).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".activity-comment, .issue-data-block, #activitymodule"))
+                    )
+                except Exception:
+                    _time.sleep(3)
+
+                # Scroll al final para que el comentario más reciente quede visible abajo
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                _time.sleep(1)
                 driver.execute_script("""
-                    var comments = document.querySelectorAll('.activity-comment, .issue-data-block');
+                    var comments = document.querySelectorAll('.activity-comment, .issue-data-block, .twixi-block');
                     if (comments.length > 0) {
-                        comments[comments.length - 1].scrollIntoView({block: 'end'});
-                    } else {
-                        window.scrollTo(0, document.body.scrollHeight);
+                        comments[comments.length - 1].scrollIntoView({behavior: 'instant', block: 'end'});
                     }
                 """)
                 _time.sleep(1)
+
                 screenshot_file = f"{key}.png"
                 screenshot_path = SCREENSHOTS_DIR / screenshot_file
                 driver.save_screenshot(str(screenshot_path))
-                conn2.execute("UPDATE tasks SET screenshot=? WHERE jira_key=?", (screenshot_file, key))
-                screenshots_taken += 1
-            except Exception:
-                pass
-        conn2.commit()
-        conn2.close()
-        driver.quit()
+                conn.execute("UPDATE tasks SET screenshot=? WHERE jira_key=?", (screenshot_file, key))
+                conn.commit()
+            except Exception as e:
+                print(f"  Screenshot error for {key}: {e}")
+        conn.close()
     except Exception as e:
-        print(f"  Screenshots error: {e}")
-
-    return jsonify({"ok": True, "total": len(all_issues), "imported": imported, "screenshots": screenshots_taken})
+        print(f"  Screenshot worker init error: {e}")
+    finally:
+        if driver:
+            driver.quit()
 
 
 if __name__ == "__main__":

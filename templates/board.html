@@ -161,6 +161,28 @@
         .priority-high { background: #e74c3c22; color: #e74c3c; }
         .priority-medium { background: #f5a62322; color: #f5a623; }
         .priority-low { background: #27ae6022; color: #27ae60; }
+        .priority-badge { cursor: pointer; position: relative; }
+        .priority-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 4px 0;
+            z-index: 100;
+            min-width: 140px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+        .priority-dropdown div {
+            padding: 4px 10px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            white-space: nowrap;
+        }
+        .priority-dropdown div:hover {
+            background: #3a3a3a;
+        }
         .task-card .last-comment {
             font-size: 0.72rem;
             color: #777;
@@ -319,7 +341,8 @@
         }
         .task-screenshot img {
             width: 100%;
-            height: 60px;
+            height: auto;
+            max-height: 180px;
             object-fit: cover;
             border-radius: 6px;
             border: 1px solid #2a2a4a;
@@ -331,19 +354,37 @@
         .lightbox-overlay {
             display: none;
             position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.9);
-            z-index: 3000;
-            align-items: center;
-            justify-content: center;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0,0,0,0.95);
+            z-index: 10000;
+            overflow: auto;
             cursor: pointer;
+            text-align: center;
         }
-        .lightbox-overlay.active { display: flex; }
+        .lightbox-overlay.active { display: block; }
         .lightbox-overlay img {
-            max-width: 90vw;
-            max-height: 90vh;
+            display: inline-block;
+            max-width: 95vw;
+            max-height: 95vh;
+            margin: 2vh auto;
             border-radius: 8px;
             box-shadow: 0 0 40px rgba(0,0,0,0.5);
+            cursor: zoom-in;
+            position: relative;
+            z-index: 10001;
+        }
+        .lightbox-overlay img.zoomed {
+            max-width: none;
+            max-height: none;
+            width: auto;
+            height: auto;
+            cursor: zoom-out;
+        }
+        body.lightbox-open {
+            overflow: hidden !important;
         }
 
         /* Filter bar */
@@ -413,7 +454,7 @@
 
     <!-- Lightbox -->
     <div class="lightbox-overlay" id="lightbox" onclick="closeLightbox()">
-        <img id="lightboxImg" src="" alt="Screenshot">
+        <img id="lightboxImg" src="" alt="Screenshot" onclick="toggleZoom(event)">
     </div>
 
     <!-- Modal nueva tarea -->
@@ -540,9 +581,10 @@
             const linkHtml = task.link ? `<a href="${escapeHtml(linkUrl)}" target="_blank" style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>` : "";
             const lastComment = task.last_comment ? `<div class="last-comment">${escapeHtml(task.last_comment.substring(0, 100))}</div>` : "";
             const jiraUpdatedHtml = task.jira_updated ? `<div style="font-size:0.7rem;color:#666;margin-top:4px;">🕐 Última actualización: ${escapeHtml(task.jira_updated)}</div>` : "";
+            const screenshotTs = Date.now();
             const screenshotHtml = task.screenshot ? `
-                <div class="task-screenshot" onclick="openLightbox('/screenshots/${encodeURIComponent(task.screenshot)}')">
-                    <img src="/screenshots/${encodeURIComponent(task.screenshot)}" alt="Screenshot" loading="lazy">
+                <div class="task-screenshot" onclick="event.stopPropagation(); openLightbox('/screenshots/${encodeURIComponent(task.screenshot)}?t=${screenshotTs}')" draggable="false">
+                    <img src="/screenshots/${encodeURIComponent(task.screenshot)}?t=${screenshotTs}" alt="Screenshot" loading="lazy" draggable="false">
                 </div>` : "";
 
             const ticketsHtml = tickets.length > 0 ? `
@@ -568,7 +610,8 @@
                     <div class="task-title">${escapeHtml(task.title)}</div>
                     ${task.description ? `<div class="task-desc">${escapeHtml(task.description)}</div>` : ""}
                     <div class="task-meta">
-                        <span class="priority-badge ${priorityClass}">${task.priority || 'Normal'}</span>
+                        <span class="priority-badge ${priorityClass}" onclick="openPriorityDropdown(event, ${task.id})">${task.priority || 'Normal'}</span>
+                        ${task.priority_override ? `<button onclick="resetPriority(event, ${task.id})" title="Restaurar prioridad original de Jira" style="background:none;border:none;color:#888;cursor:pointer;font-size:0.7rem;padding:0 2px;">↩</button>` : ""}
                         ${task.labels ? `<span style="font-size:0.7rem;color:#888">🏷 ${escapeHtml(task.labels)}</span>` : ""}
                         ${totalTickets > 0 ? `<span style="font-size:0.7rem;color:#888">☑ ${doneCount}/${totalTickets}</span>` : ""}
                     </div>
@@ -762,12 +805,99 @@
         // LIGHTBOX
         // ═══════════════════════════════════════════
         function openLightbox(src) {
-            document.getElementById("lightboxImg").src = src;
+            const img = document.getElementById("lightboxImg");
+            img.src = src;
+            img.classList.remove("zoomed");
             document.getElementById("lightbox").classList.add("active");
+            document.body.classList.add("lightbox-open");
         }
 
         function closeLightbox() {
+            const img = document.getElementById("lightboxImg");
+            img.classList.remove("zoomed");
             document.getElementById("lightbox").classList.remove("active");
+            document.body.classList.remove("lightbox-open");
+        }
+
+        function toggleZoom(event) {
+            event.stopPropagation();
+            const img = document.getElementById("lightboxImg");
+            img.classList.toggle("zoomed");
+        }
+
+        // ═══════════════════════════════════════════
+        // PRIORITY DROPDOWN
+        // ═══════════════════════════════════════════
+        const PRIORITY_OPTIONS = [
+            { label: "Most Important", cls: "priority-most-important" },
+            { label: "High", cls: "priority-high" },
+            { label: "Normal", cls: "priority-medium" },
+            { label: "Low", cls: "priority-low" }
+        ];
+
+        function openPriorityDropdown(event, taskId) {
+            event.stopPropagation();
+            // Close any existing dropdown
+            closePriorityDropdown();
+
+            const badge = event.target;
+            const dropdown = document.createElement("div");
+            dropdown.className = "priority-dropdown";
+            dropdown.id = "priorityDropdown";
+
+            PRIORITY_OPTIONS.forEach(opt => {
+                const item = document.createElement("div");
+                item.innerHTML = `<span class="priority-badge ${opt.cls}" style="cursor:pointer">${opt.label}</span>`;
+                item.onclick = (e) => {
+                    e.stopPropagation();
+                    setPriority(taskId, opt.label);
+                };
+                dropdown.appendChild(item);
+            });
+
+            // Add "Reset" option to clear override
+            const resetItem = document.createElement("div");
+            resetItem.textContent = "↩ Reset (Jira)";
+            resetItem.style.color = "#888";
+            resetItem.style.borderTop = "1px solid #444";
+            resetItem.style.marginTop = "2px";
+            resetItem.style.paddingTop = "4px";
+            resetItem.onclick = (e) => {
+                e.stopPropagation();
+                setPriority(taskId, "");
+            };
+            dropdown.appendChild(resetItem);
+
+            badge.style.position = "relative";
+            badge.appendChild(dropdown);
+
+            // Close on click outside
+            setTimeout(() => document.addEventListener("click", closePriorityDropdown, { once: true }), 0);
+        }
+
+        function closePriorityDropdown() {
+            const existing = document.getElementById("priorityDropdown");
+            if (existing) existing.remove();
+        }
+
+        async function setPriority(taskId, priority) {
+            closePriorityDropdown();
+            await fetch(`/api/tasks/${taskId}/priority`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ priority })
+            });
+            loadBoard();
+        }
+
+        async function resetPriority(event, taskId) {
+            event.stopPropagation();
+            await fetch(`/api/tasks/${taskId}/priority`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ priority: "" })
+            });
+            loadBoard();
         }
 
         // ═══════════════════════════════════════════
