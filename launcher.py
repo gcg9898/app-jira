@@ -238,14 +238,24 @@ class LauncherApp:
         self.root.resizable(False, True)
 
         w = 440
-        screen_h = self.root.winfo_screenheight()
-        # Leave room for the Windows taskbar (~60px)
-        max_h = screen_h - 80
-        h = min(620, max_h)
-        x = (self.root.winfo_screenwidth() - w) // 2
-        y = max(0, (screen_h - h) // 2)
+        # Get usable work area (excludes taskbar) for the primary monitor
+        try:
+            import ctypes
+            from ctypes import wintypes
+            rect = wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)  # SPI_GETWORKAREA
+            work_h = rect.bottom - rect.top
+            work_w = rect.right - rect.left
+        except Exception:
+            work_h = self.root.winfo_screenheight() - 80
+            work_w = self.root.winfo_screenwidth()
+
+        h = min(620, work_h - 20)
+        x = (work_w - w) // 2
+        y = max(0, (work_h - h) // 2)
         self.root.geometry(f"{w}x{h}+{x}+{y}")
-        self.root.minsize(440, min(400, max_h))
+        self.root.minsize(440, min(400, work_h - 20))
+        self.root.maxsize(w, work_h)
 
         # ── Scrollable container ──────────────────────────────────────
         outer = tk.Frame(self.root, bg="#1a1a2e")
