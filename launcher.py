@@ -107,12 +107,12 @@ def check_tray():
 
 
 # ═══════════════════════════════════════════════════════════════
-# AUTO-UPDATE desde GitHub Releases
+# AUTO-UPDATE desde GitHub (sin token, descarga directa del repo)
 # ═══════════════════════════════════════════════════════════════
 GITHUB_REPO = "gcg9898/app-jira"
 GITHUB_BRANCH = "master"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
-GITHUB_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/latest"
+GITHUB_EXE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/dist/JiraBoard.exe?ref={GITHUB_BRANCH}"
 
 if getattr(sys, 'frozen', False):
     _BUNDLE_DIR = Path(sys._MEIPASS)
@@ -149,30 +149,27 @@ def get_remote_version():
         return None
 
 
-def _get_release_exe_url():
-    """Get the download URL for JiraBoard.exe from the latest GitHub Release."""
+def _get_exe_download_url():
+    """Get the download_url for dist/JiraBoard.exe from GitHub Contents API."""
     import json
     try:
-        req = Request(GITHUB_RELEASE_URL, headers={
+        req = Request(GITHUB_EXE_URL, headers={
             "User-Agent": "JiraBoard-Updater",
             "Accept": "application/vnd.github.v3+json",
         })
         with urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            for asset in data.get("assets", []):
-                if asset["name"] == "JiraBoard.exe":
-                    return asset["browser_download_url"]
+            return data.get("download_url")
     except (URLError, HTTPError, OSError, KeyError):
-        pass
-    return None
+        return None
 
 
 def download_update(progress_cb=None):
-    """Download new exe from GitHub Release. Returns path or None."""
+    """Download new exe from GitHub repo. Returns path or None."""
     if not getattr(sys, 'frozen', False):
         return None
 
-    exe_url = _get_release_exe_url()
+    exe_url = _get_exe_download_url()
     if not exe_url:
         return None
 
