@@ -233,7 +233,8 @@ del "%~f0"
 class LauncherApp:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("JiraBoard - Panel de Control")
+        local_ver = get_local_version() or "dev"
+        self.root.title(f"JiraBoard - Panel de Control (v{local_ver})")
         self.root.configure(bg="#1a1a2e")
         self.root.resizable(False, True)
 
