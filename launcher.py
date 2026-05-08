@@ -107,13 +107,12 @@ def check_tray():
 
 
 # ═══════════════════════════════════════════════════════════════
-# AUTO-UPDATE desde GitHub
+# AUTO-UPDATE desde GitHub Releases
 # ═══════════════════════════════════════════════════════════════
 GITHUB_REPO = "gcg9898/app-jira"
 GITHUB_BRANCH = "master"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
-GITHUB_RAW = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}"
-GITHUB_EXE_URL = f"{GITHUB_RAW}/dist/JiraBoard.exe"
+GITHUB_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/latest"
 
 if getattr(sys, 'frozen', False):
     _BUNDLE_DIR = Path(sys._MEIPASS)
@@ -125,7 +124,13 @@ def get_local_version():
     """Read bundled version.txt (generated at build time)."""
     vf = _BUNDLE_DIR / "version.txt"
     if vf.exists():
-        return vf.read_text(encoding="utf-8").strip()
+        try:
+            return vf.read_text(encoding="utf-8").strip()
+        except (UnicodeDecodeError, ValueError):
+            try:
+                return vf.read_text(encoding="utf-8-sig").strip()
+            except Exception:
+                return None
     return None
 
 
@@ -144,15 +149,38 @@ def get_remote_version():
         return None
 
 
+def _get_release_exe_url():
+    """Get the download URL for JiraBoard.exe from the latest GitHub Release."""
+    import json
+    try:
+        req = Request(GITHUB_RELEASE_URL, headers={
+            "User-Agent": "JiraBoard-Updater",
+            "Accept": "application/vnd.github.v3+json",
+        })
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            for asset in data.get("assets", []):
+                if asset["name"] == "JiraBoard.exe":
+                    return asset["browser_download_url"]
+    except (URLError, HTTPError, OSError, KeyError):
+        pass
+    return None
+
+
 def download_update(progress_cb=None):
-    """Download new exe to a temp file next to the current exe. Returns path or None."""
+    """Download new exe from GitHub Release. Returns path or None."""
     if not getattr(sys, 'frozen', False):
         return None
+
+    exe_url = _get_release_exe_url()
+    if not exe_url:
+        return None
+
     exe_dir = Path(sys.executable).parent
     update_path = exe_dir / "JiraBoard_update.exe"
     try:
-        req = Request(GITHUB_EXE_URL, headers={"User-Agent": "JiraBoard-Updater"})
-        with urlopen(req, timeout=120) as resp:
+        req = Request(exe_url, headers={"User-Agent": "JiraBoard-Updater"})
+        with urlopen(req, timeout=300) as resp:
             total = int(resp.headers.get("Content-Length", 0))
             downloaded = 0
             with open(update_path, "wb") as f:
@@ -164,8 +192,16 @@ def download_update(progress_cb=None):
                     downloaded += len(chunk)
                     if progress_cb and total > 0:
                         progress_cb(downloaded, total)
+
+        # Validate downloaded file is a real PE executable
+        with open(update_path, "rb") as f:
+            header = f.read(2)
+        if header != b"MZ":
+            update_path.unlink()
+            return None
+
         return update_path
-    except (URLError, HTTPError, OSError) as e:
+    except (URLError, HTTPError, OSError):
         if update_path.exists():
             update_path.unlink()
         return None
