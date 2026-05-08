@@ -174,7 +174,10 @@ def download_update(progress_cb=None):
         return None
 
     exe_dir = Path(sys.executable).parent
-    update_path = exe_dir / "JiraBoard_update.exe"
+    # Download to TEMP first (outside OneDrive) to avoid sync issues
+    import tempfile
+    temp_dir = Path(tempfile.gettempdir())
+    update_path = temp_dir / "JiraBoard_update.exe"
     log_path = exe_dir / "_update.log"
 
     def _log(msg):
@@ -242,7 +245,11 @@ def apply_update_and_restart():
     if not getattr(sys, 'frozen', False):
         return
     exe_path = Path(sys.executable)
-    update_path = exe_path.parent / "JiraBoard_update.exe"
+    import tempfile
+    update_path = Path(tempfile.gettempdir()) / "JiraBoard_update.exe"
+    if not update_path.exists():
+        # Fallback to same directory
+        update_path = exe_path.parent / "JiraBoard_update.exe"
     if not update_path.exists():
         return
 
@@ -262,7 +269,7 @@ def apply_update_and_restart():
 echo === INICIO ACTUALIZACION === > "{log_path}"
 echo Fecha: %date% %time% >> "{log_path}"
 echo Exe actual: {exe_path} >> "{log_path}"
-echo Update: {update_path} >> "{log_path}"
+echo Update (en TEMP): {update_path} >> "{log_path}"
 
 REM Wait for old process to fully exit (up to 30 seconds)
 set RETRIES=0
@@ -289,7 +296,7 @@ echo Limpieza _MEI completada >> "{log_path}"
 
 REM Unblock downloaded file using PowerShell
 echo Desbloqueando archivo descargado... >> "{log_path}"
-powershell -Command "Unblock-File -Path '{update_path}'" >> "{log_path}" 2>&1
+powershell -Command "Unblock-File -Path '{update_path}'; Remove-Item -Path '{update_path}:Zone.Identifier' -ErrorAction SilentlyContinue" >> "{log_path}" 2>&1
 
 REM Try to delete old exe (retry up to 15 times for OneDrive locks)
 set RETRIES=0
@@ -306,52 +313,30 @@ if exist "{exe_path}" (
 )
 echo Exe antiguo eliminado OK (intentos: %RETRIES%) >> "{log_path}"
 
-REM Copy new exe using binary copy (more reliable than move on OneDrive)
-echo Copiando update a destino... >> "{log_path}"
-copy /B /Y "{update_path}" "{exe_path}" >nul 2>>"{log_path}"
+REM Move update into place (move is atomic, avoids OneDrive partial sync)
+echo Moviendo update a destino... >> "{log_path}"
+move /Y "{update_path}" "{exe_path}" >nul 2>>"{log_path}"
 if errorlevel 1 (
-    echo ERROR: copy fallo >> "{log_path}"
-    goto cleanup
+    echo ERROR: move fallo, intentando copy... >> "{log_path}"
+    copy /B /Y "{update_path}" "{exe_path}" >nul 2>>"{log_path}"
+    if errorlevel 1 (
+        echo ERROR: copy tambien fallo >> "{log_path}"
+        goto cleanup
+    )
 )
-echo Copy completado >> "{log_path}"
+echo Archivo en destino OK >> "{log_path}"
 
-REM Verify sizes match
-for %%A in ("{update_path}") do set SRC_SIZE=%%~zA
+REM Verify sizes
 for %%A in ("{exe_path}") do set DST_SIZE=%%~zA
-echo Tamano origen: %SRC_SIZE% destino: %DST_SIZE% >> "{log_path}"
-if not "%SRC_SIZE%"=="%DST_SIZE%" (
-    echo ERROR: Tamanos no coinciden >> "{log_path}"
-    goto cleanup
-)
+echo Tamano destino: %DST_SIZE% >> "{log_path}"
 
-REM Verify file hash matches
-echo Verificando integridad con hash... >> "{log_path}"
-powershell -Command "$h1=(Get-FileHash '{update_path}' -Algorithm MD5).Hash; $h2=(Get-FileHash '{exe_path}' -Algorithm MD5).Hash; Write-Output \\"Hash update: $h1\\"; Write-Output \\"Hash destino: $h2\\"; if($h1 -ne $h2){{exit 1}}" >> "{log_path}" 2>&1
-if errorlevel 1 (
-    echo ERROR: Hashes no coinciden - archivo corrupto >> "{log_path}"
-    goto cleanup
-)
-echo Hashes verificados OK >> "{log_path}"
-
-REM Delete the update copy
-del /F "{update_path}" 2>nul
-
-REM Unblock final exe too
+REM Unblock final exe
 echo Desbloqueando exe final... >> "{log_path}"
-powershell -Command "Unblock-File -Path '{exe_path}'" >> "{log_path}" 2>&1
+powershell -Command "Unblock-File -Path '{exe_path}'; Remove-Item -Path '{exe_path}:Zone.Identifier' -ErrorAction SilentlyContinue" >> "{log_path}" 2>&1
 
-REM Wait for OneDrive sync to settle (critical for OneDrive folders)
+REM Wait for OneDrive sync to settle
 echo Esperando sincronizacion OneDrive (5s)... >> "{log_path}"
 ping 127.0.0.1 -n 6 > nul
-
-REM Verify exe is readable before launching
-echo Verificando que el exe es legible... >> "{log_path}"
-powershell -Command "$f=[System.IO.File]::ReadAllBytes('{exe_path}'); Write-Output \\"Bytes leidos: $($f.Length)\\"; if($f[0] -ne 77 -or $f[1] -ne 90){{Write-Output 'ERROR: No es PE valido'; exit 1}}" >> "{log_path}" 2>&1
-if errorlevel 1 (
-    echo ERROR: Exe no es valido tras la copia >> "{log_path}"
-    goto cleanup
-)
-echo Exe verificado y listo >> "{log_path}"
 
 echo Lanzando exe actualizado... >> "{log_path}"
 
