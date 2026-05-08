@@ -27,6 +27,7 @@ app = Flask(__name__, template_folder=str(_BUNDLE_DIR / 'templates'))
 DB_PATH = _DATA_DIR / "board.db"
 SCREENSHOTS_DIR = _DATA_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
+SCREENSHOT_LOG = _DATA_DIR / "screenshot_errors.log"
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURACIÓN JIRA (desde .env)
@@ -522,6 +523,15 @@ def _screenshot_worker(keys):
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     import time as _time
+    from datetime import datetime as _dt
+
+    def _log_error(msg):
+        try:
+            with open(SCREENSHOT_LOG, "a", encoding="utf-8") as f:
+                f.write(f"[{_dt.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
+        except Exception:
+            pass
+        print(f"  {msg}")
 
     chrome_options = Options()
     chrome_options.add_argument("--headless")
@@ -571,10 +581,10 @@ def _screenshot_worker(keys):
                 conn.execute("UPDATE tasks SET screenshot=? WHERE jira_key=?", (screenshot_file, key))
                 conn.commit()
             except Exception as e:
-                print(f"  Screenshot error for {key}: {e}")
+                _log_error(f"Screenshot error for {key}: {e}")
         conn.close()
     except Exception as e:
-        print(f"  Screenshot worker init error: {e}")
+        _log_error(f"Screenshot worker init error: {e}")
     finally:
         if driver:
             driver.quit()

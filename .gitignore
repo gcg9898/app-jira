@@ -26,3 +26,10 @@ dist/*
 
 # VS Code
 .vscode/
+
+# Generated version file (embedded in .exe at build time)
+version.txt
+
+# Update temp files
+_update.bat
+*_update.exe

@@ -5,14 +5,16 @@ Levanta Flask, Tray App y muestra estado en una ventana.
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import sqlite3
 import sys
 import os
 import webbrowser
+import hashlib
+import tempfile
 from pathlib import Path
-from urllib.request import urlopen
-from urllib.error import URLError
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = Path(sys.executable).parent
@@ -102,6 +104,97 @@ def check_tray():
     if tray_proc and tray_proc.poll() is None:
         return True
     return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# AUTO-UPDATE desde GitHub
+# ═══════════════════════════════════════════════════════════════
+GITHUB_REPO = "gcg9898/app-jira"
+GITHUB_BRANCH = "master"
+GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
+GITHUB_RAW = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}"
+GITHUB_EXE_URL = f"{GITHUB_RAW}/dist/JiraBoard.exe"
+
+if getattr(sys, 'frozen', False):
+    _BUNDLE_DIR = Path(sys._MEIPASS)
+else:
+    _BUNDLE_DIR = Path(__file__).parent
+
+
+def get_local_version():
+    """Read bundled version.txt (generated at build time)."""
+    vf = _BUNDLE_DIR / "version.txt"
+    if vf.exists():
+        return vf.read_text(encoding="utf-8").strip()
+    return None
+
+
+def get_remote_version():
+    """Get latest commit short SHA from GitHub API."""
+    import json
+    try:
+        req = Request(GITHUB_API_URL, headers={
+            "User-Agent": "JiraBoard-Updater",
+            "Accept": "application/vnd.github.v3+json",
+        })
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data["sha"][:7]  # short hash to match version.txt
+    except (URLError, HTTPError, OSError, KeyError):
+        return None
+
+
+def download_update(progress_cb=None):
+    """Download new exe to a temp file next to the current exe. Returns path or None."""
+    if not getattr(sys, 'frozen', False):
+        return None
+    exe_dir = Path(sys.executable).parent
+    update_path = exe_dir / "JiraBoard_update.exe"
+    try:
+        req = Request(GITHUB_EXE_URL, headers={"User-Agent": "JiraBoard-Updater"})
+        with urlopen(req, timeout=120) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            with open(update_path, "wb") as f:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_cb and total > 0:
+                        progress_cb(downloaded, total)
+        return update_path
+    except (URLError, HTTPError, OSError) as e:
+        if update_path.exists():
+            update_path.unlink()
+        return None
+
+
+def apply_update_and_restart():
+    """Create a batch script that replaces the exe and restarts."""
+    if not getattr(sys, 'frozen', False):
+        return
+    exe_path = Path(sys.executable)
+    update_path = exe_path.parent / "JiraBoard_update.exe"
+    if not update_path.exists():
+        return
+
+    bat_path = exe_path.parent / "_update.bat"
+    bat_content = f'''@echo off
+echo Actualizando JiraBoard...
+ping 127.0.0.1 -n 3 > nul
+del "{exe_path}"
+move "{update_path}" "{exe_path}"
+start "" "{exe_path}"
+del "%~f0"
+'''
+    bat_path.write_text(bat_content, encoding="utf-8")
+    subprocess.Popen(
+        ["cmd.exe", "/c", str(bat_path)],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    os._exit(0)
 
 
 class LauncherApp:
@@ -273,6 +366,34 @@ class LauncherApp:
                                   cursor="hand2", command=self.save_credentials)
         save_cred_btn.grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
+        # Update frame
+        upd_frame = tk.Frame(root, bg="#0f0f23", padx=16, pady=12,
+                             highlightbackground="#2a2a4a", highlightthickness=1)
+        upd_frame.pack(fill="x", padx=20, pady=(0, 12))
+
+        tk.Label(upd_frame, text="Actualizaciones", bg="#0f0f23", fg="#e0e0e0",
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        local_ver = get_local_version() or "dev"
+        tk.Label(upd_frame, text="Versión actual:", bg="#0f0f23", fg="#ccc",
+                 font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
+        tk.Label(upd_frame, text=local_ver, bg="#0f0f23", fg="#16c79a",
+                 font=("Segoe UI", 9, "bold")).grid(row=1, column=1, sticky="w", padx=(8, 0))
+
+        self.update_status_label = tk.Label(upd_frame, text="", bg="#0f0f23", fg="#888",
+                                            font=("Segoe UI", 8))
+        self.update_status_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        self.update_progress = ttk.Progressbar(upd_frame, length=200, mode="determinate")
+        self.update_progress.grid(row=3, column=0, columnspan=3, sticky="we", pady=(4, 0))
+        self.update_progress.grid_remove()
+
+        self.update_btn = tk.Button(upd_frame, text="\U0001F504 Comprobar actualizaciones",
+                                    bg="#2a2a4a", fg="#e0e0e0",
+                                    font=("Segoe UI", 9), relief="flat", padx=10, pady=4,
+                                    cursor="hand2", command=self.check_for_updates)
+        self.update_btn.grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
         # Buttons
         btn_frame = tk.Frame(root, bg="#1a1a2e")
         btn_frame.pack(fill="x", padx=20, pady=(4, 16))
@@ -385,6 +506,88 @@ class LauncherApp:
         env_data["JIRA_BASE_URL"] = self.url_entry.get().strip() or "https://jiraitsm.eulen.com"
         env_data["JIRA_FILTER_ID"] = self.filter_entry.get().strip() or "30004"
         save_env(env_data)
+
+    def check_for_updates(self):
+        """Check GitHub for a newer version and offer to update."""
+        self.update_btn.config(state="disabled", text="Comprobando...")
+        self.update_status_label.config(text="Conectando con GitHub...", fg="#888")
+        threading.Thread(target=self._check_update_worker, daemon=True).start()
+
+    def _check_update_worker(self):
+        local_ver = get_local_version()
+        remote_ver = get_remote_version()
+        self.root.after(0, self._handle_update_result, local_ver, remote_ver)
+
+    def _handle_update_result(self, local_ver, remote_ver):
+        self.update_btn.config(state="normal", text="\U0001F504 Comprobar actualizaciones")
+
+        if remote_ver is None:
+            self.update_status_label.config(
+                text="No se pudo conectar con GitHub. Comprueba tu conexión.",
+                fg="#e74c3c")
+            return
+
+        if local_ver is None or local_ver != remote_ver:
+            self.update_status_label.config(
+                text=f"Nueva versión disponible: {remote_ver}",
+                fg="#f5a623")
+            if not getattr(sys, 'frozen', False):
+                self.update_status_label.config(
+                    text=f"Nueva versión {remote_ver} (actualización solo disponible en .exe)",
+                    fg="#f5a623")
+                return
+            if messagebox.askyesno("Actualización disponible",
+                                   f"Hay una nueva versión ({remote_ver}).\n\n"
+                                   "¿Descargar e instalar ahora?\n"
+                                   "La aplicación se reiniciará automáticamente."):
+                self._start_download()
+        else:
+            self.update_status_label.config(
+                text=f"Ya tienes la última versión ({local_ver})",
+                fg="#16c79a")
+
+    def _start_download(self):
+        self.update_btn.config(state="disabled", text="Descargando...")
+        self.update_progress.grid()
+        self.update_progress["value"] = 0
+        self.update_status_label.config(text="Descargando actualización...", fg="#4A90D9")
+        threading.Thread(target=self._download_worker, daemon=True).start()
+
+    def _download_worker(self):
+        def progress_cb(downloaded, total):
+            pct = int(downloaded * 100 / total)
+            self.root.after(0, self._update_download_progress, pct, downloaded, total)
+
+        result = download_update(progress_cb)
+        self.root.after(0, self._download_done, result)
+
+    def _update_download_progress(self, pct, downloaded, total):
+        self.update_progress["value"] = pct
+        mb_down = downloaded / (1024 * 1024)
+        mb_total = total / (1024 * 1024)
+        self.update_status_label.config(
+            text=f"Descargando... {mb_down:.1f} / {mb_total:.1f} MB ({pct}%)")
+
+    def _download_done(self, update_path):
+        self.update_progress.grid_remove()
+        self.update_btn.config(state="normal", text="\U0001F504 Comprobar actualizaciones")
+
+        if update_path is None:
+            self.update_status_label.config(
+                text="Error al descargar la actualización.", fg="#e74c3c")
+            return
+
+        self.update_status_label.config(text="Reiniciando...", fg="#16c79a")
+        # Kill Flask and Tray before restarting
+        for proc in [flask_proc, tray_proc]:
+            if proc and proc.poll() is None:
+                try:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                   creationflags=subprocess.CREATE_NO_WINDOW,
+                                   capture_output=True)
+                except Exception:
+                    pass
+        apply_update_and_restart()
 
     def minimize(self):
         self.root.iconify()

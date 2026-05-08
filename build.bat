@@ -25,6 +25,7 @@ uv run --with pyinstaller --with flask --with requests --with selenium ^
     --noconsole ^
     --name JiraBoard ^
     --add-data "templates;templates" ^
+    --add-data "version.txt;." ^
     --hidden-import flask ^
     --hidden-import flask.templating ^
     --hidden-import jinja2 ^
