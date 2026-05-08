@@ -261,6 +261,18 @@ def delete_column(col_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/columns/reorder", methods=["PUT"])
+def reorder_columns():
+    data = request.json
+    order = data.get("order", [])  # list of column ids in new order
+    conn = get_db()
+    for pos, col_id in enumerate(order):
+        conn.execute("UPDATE columns SET position = ? WHERE id = ?", (pos, int(col_id)))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
 # ═══════════════════════════════════════════════════════════════
 # API - TAREAS
 # ═══════════════════════════════════════════════════════════════

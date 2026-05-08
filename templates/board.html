@@ -433,6 +433,28 @@
             z-index: 2000;
         }
         .toast.show { transform: translateY(0); opacity: 1; }
+
+        /* Column drag & drop */
+        .column.col-dragging {
+            opacity: 0.4;
+            transform: rotate(1deg);
+        }
+        .column.col-drag-over {
+            border-color: #16c79a;
+            box-shadow: 0 0 12px rgba(22,199,154,0.3);
+        }
+        .column-header {
+            cursor: grab;
+        }
+        .column-header:active {
+            cursor: grabbing;
+        }
+        .col-drag-handle {
+            color: #555;
+            font-size: 0.8rem;
+            margin-right: 6px;
+            cursor: grab;
+        }
     </style>
 </head>
 <body>
@@ -540,8 +562,16 @@
                 }
 
                 const taskCount = tasks.length;
+                colEl.setAttribute("draggable", "true");
+                colEl.addEventListener("dragstart", e => colDragStart(e, col.id));
+                colEl.addEventListener("dragover", colDragOver);
+                colEl.addEventListener("dragleave", colDragLeave);
+                colEl.addEventListener("drop", e => colDrop(e));
+                colEl.addEventListener("dragend", colDragEnd);
+
                 colEl.innerHTML = `
                     <div class="column-header">
+                        <span class="col-drag-handle">⠿</span>
                         <h2>${col.name}</h2>
                         <span class="column-count">${taskCount}</span>
                     </div>
@@ -625,12 +655,85 @@
         }
 
         // ═══════════════════════════════════════════
-        // DRAG & DROP
+        // DRAG & DROP COLUMNAS
+        // ═══════════════════════════════════════════
+        let draggedColId = null;
+
+        function colDragStart(event, colId) {
+            // Only allow column drag from the header area
+            const header = event.target.closest('.column-header');
+            if (!header) { event.preventDefault(); return; }
+            draggedColId = colId;
+            draggedTaskId = null; // prevent task drag conflict
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', 'col-' + colId);
+            setTimeout(() => {
+                const el = document.querySelector(`.column[data-col-id="${colId}"]`);
+                if (el) el.classList.add('col-dragging');
+            }, 0);
+        }
+
+        function colDragOver(event) {
+            if (!draggedColId) return;
+            event.preventDefault();
+            const col = event.currentTarget.closest('.column');
+            if (col) col.classList.add('col-drag-over');
+        }
+
+        function colDragLeave(event) {
+            const col = event.currentTarget.closest('.column');
+            if (col) col.classList.remove('col-drag-over');
+        }
+
+        async function colDrop(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!draggedColId) return;
+            const targetCol = event.currentTarget.closest('.column');
+            if (!targetCol) return;
+            targetCol.classList.remove('col-drag-over');
+
+            const targetId = parseInt(targetCol.dataset.colId);
+            if (targetId === draggedColId) return;
+
+            // Reorder in boardData
+            const oldIdx = boardData.findIndex(c => c.id === draggedColId);
+            const newIdx = boardData.findIndex(c => c.id === targetId);
+            if (oldIdx < 0 || newIdx < 0) return;
+
+            const [moved] = boardData.splice(oldIdx, 1);
+            boardData.splice(newIdx, 0, moved);
+
+            // Re-render immediately for visual feedback
+            renderBoard();
+
+            // Save to backend
+            const order = boardData.map(c => c.id);
+            await fetch('/api/columns/reorder', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ order })
+            });
+
+            draggedColId = null;
+        }
+
+        function colDragEnd(event) {
+            document.querySelectorAll('.column').forEach(c => {
+                c.classList.remove('col-dragging', 'col-drag-over');
+            });
+            draggedColId = null;
+        }
+
+        // ═══════════════════════════════════════════
+        // DRAG & DROP TAREAS
         // ═══════════════════════════════════════════
         let draggedTaskId = null;
 
         function dragStart(event, taskId) {
             draggedTaskId = taskId;
+            draggedColId = null; // prevent column drag conflict
+            event.stopPropagation(); // don't trigger column drag
             event.target.classList.add("dragging");
             event.dataTransfer.effectAllowed = "move";
         }
