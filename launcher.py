@@ -17,7 +17,8 @@ from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
 if getattr(sys, 'frozen', False):
-    BASE_DIR = Path(sys.executable).parent
+    _env_data = os.environ.get("JIRABOARD_DATA_DIR")
+    BASE_DIR = Path(_env_data) if _env_data else Path(sys.executable).parent
 else:
     BASE_DIR = Path(__file__).parent
 DB_PATH = BASE_DIR / "board.db"
@@ -244,7 +245,11 @@ def apply_update_and_restart():
     """Create a batch script that replaces the exe and restarts."""
     if not getattr(sys, 'frozen', False):
         return
-    exe_path = Path(sys.executable)
+    # Use BASE_DIR to find the "real" exe location (may differ from sys.executable
+    # when running from a local TEMP copy)
+    exe_path = BASE_DIR / "JiraBoard.exe"
+    if not exe_path.exists():
+        exe_path = Path(sys.executable)
     import tempfile
     update_path = Path(tempfile.gettempdir()) / "JiraBoard_update.exe"
     if not update_path.exists():
