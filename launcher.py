@@ -240,11 +240,15 @@ class LauncherApp:
         self.root.configure(bg="#1a1a2e")
         self.root.resizable(False, True)
 
-        w, h = 440, 620
+        w = 440
+        screen_h = self.root.winfo_screenheight()
+        # Leave room for the Windows taskbar (~60px)
+        max_h = screen_h - 80
+        h = min(620, max_h)
         x = (self.root.winfo_screenwidth() - w) // 2
-        y = (self.root.winfo_screenheight() - h) // 2
+        y = max(0, (screen_h - h) // 2)
         self.root.geometry(f"{w}x{h}+{x}+{y}")
-        self.root.minsize(440, 400)
+        self.root.minsize(440, min(400, max_h))
 
         # ── Scrollable container ──────────────────────────────────────
         outer = tk.Frame(self.root, bg="#1a1a2e")
