@@ -213,9 +213,19 @@ def apply_update_and_restart():
     if not update_path.exists():
         return
 
+    # Remove Windows "downloaded from internet" block before anything else
+    try:
+        ads = str(update_path) + ":Zone.Identifier"
+        if os.path.exists(ads):
+            os.remove(ads)
+    except Exception:
+        pass
+
     bat_path = exe_path.parent / "_update.bat"
+    log_path = exe_path.parent / "_update.log"
     bat_content = f'''@echo off
-echo Actualizando JiraBoard...
+echo Actualizando JiraBoard... > "{log_path}"
+echo %date% %time% >> "{log_path}"
 
 REM Wait for old process to fully exit (up to 30 seconds)
 set RETRIES=0
@@ -224,36 +234,61 @@ tasklist /FI "IMAGENAME eq {exe_path.name}" 2>NUL | find /I "{exe_path.name}" >N
 if %errorlevel%==0 (
     set /a RETRIES+=1
     if %RETRIES% GEQ 30 (
-        echo ERROR: No se pudo cerrar el proceso antiguo.
-        pause
+        echo ERROR: Proceso no cerro tras 30s >> "{log_path}"
         goto cleanup
     )
     ping 127.0.0.1 -n 2 > nul
     goto waitloop
 )
+echo Proceso cerrado OK (intentos: %RETRIES%) >> "{log_path}"
 
-REM Try to delete old exe (retry up to 10 times for OneDrive locks)
+REM Clean leftover _MEI temp folders from PyInstaller
+for /d %%D in ("%TEMP%\\_MEI*") do (
+    rmdir /s /q "%%D" 2>nul
+)
+echo Limpieza _MEI completada >> "{log_path}"
+
+REM Remove Zone.Identifier ADS from downloaded file
+echo.>"{update_path}:Zone.Identifier" 2>nul
+
+REM Try to delete old exe (retry up to 15 times for OneDrive locks)
 set RETRIES=0
 :delloop
 del /F "{exe_path}" 2>nul
 if exist "{exe_path}" (
     set /a RETRIES+=1
-    if %RETRIES% GEQ 10 (
-        echo ERROR: No se pudo eliminar el exe antiguo.
-        pause
+    if %RETRIES% GEQ 15 (
+        echo ERROR: No se pudo eliminar exe antiguo >> "{log_path}"
         goto cleanup
     )
     ping 127.0.0.1 -n 2 > nul
     goto delloop
 )
+echo Exe antiguo eliminado OK >> "{log_path}"
 
-REM Move new exe into place
-move /Y "{update_path}" "{exe_path}"
+REM Copy new exe using binary copy (more reliable than move on OneDrive)
+copy /B /Y "{update_path}" "{exe_path}" >nul
 if errorlevel 1 (
-    echo ERROR: No se pudo mover la actualizacion.
-    pause
+    echo ERROR: copy fallo >> "{log_path}"
     goto cleanup
 )
+
+REM Verify sizes match
+for %%A in ("{update_path}") do set SRC_SIZE=%%~zA
+for %%A in ("{exe_path}") do set DST_SIZE=%%~zA
+echo Tamano origen: %SRC_SIZE% destino: %DST_SIZE% >> "{log_path}"
+if not "%SRC_SIZE%"=="%DST_SIZE%" (
+    echo ERROR: Tamanos no coinciden >> "{log_path}"
+    goto cleanup
+)
+
+REM Delete the update copy
+del /F "{update_path}" 2>nul
+
+REM Remove Zone.Identifier from final exe too
+echo.>"{exe_path}:Zone.Identifier" 2>nul
+
+echo Lanzando exe actualizado >> "{log_path}"
 
 REM Launch updated exe
 start "" "{exe_path}"
