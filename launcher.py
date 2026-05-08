@@ -112,7 +112,7 @@ def check_tray():
 # ═══════════════════════════════════════════════════════════════
 GITHUB_REPO = "gcg9898/app-jira"
 GITHUB_BRANCH = "master"
-GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
+GITHUB_EXE_COMMITS_URL = f"https://api.github.com/repos/{GITHUB_REPO}/commits?path=dist/JiraBoard.exe&sha={GITHUB_BRANCH}&per_page=1"
 GITHUB_EXE_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/dist/JiraBoard.exe?ref={GITHUB_BRANCH}"
 
 if getattr(sys, 'frozen', False):
@@ -136,17 +136,22 @@ def get_local_version():
 
 
 def get_remote_version():
-    """Get latest commit short SHA from GitHub API."""
+    """Get version by finding the parent of the last build commit that changed the exe.
+    The post-commit hook writes the feature commit SHA to version.txt then commits the exe,
+    so the parent of the build commit = the SHA bundled in the exe."""
     import json
     try:
-        req = Request(GITHUB_API_URL, headers={
+        req = Request(GITHUB_EXE_COMMITS_URL, headers={
             "User-Agent": "JiraBoard-Updater",
             "Accept": "application/vnd.github.v3+json",
         })
         with urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return data["sha"][:7]  # short hash to match version.txt
-    except (URLError, HTTPError, OSError, KeyError):
+            if data and data[0].get("parents"):
+                return data[0]["parents"][0]["sha"][:7]
+            # If no parent (initial commit), use the commit itself
+            return data[0]["sha"][:7]
+    except (URLError, HTTPError, OSError, KeyError, IndexError):
         return None
 
 
