@@ -175,10 +175,25 @@ def download_update(progress_cb=None):
 
     exe_dir = Path(sys.executable).parent
     update_path = exe_dir / "JiraBoard_update.exe"
+    log_path = exe_dir / "_update.log"
+
+    def _log(msg):
+        try:
+            with open(log_path, "a", encoding="utf-8") as lf:
+                from datetime import datetime
+                lf.write(f"[{datetime.now().isoformat()}] {msg}\n")
+        except Exception:
+            pass
+
+    _log(f"=== INICIO DESCARGA ===")
+    _log(f"URL: {exe_url}")
+    _log(f"Destino: {update_path}")
+
     try:
         req = Request(exe_url, headers={"User-Agent": "JiraBoard-Updater"})
         with urlopen(req, timeout=300) as resp:
             total = int(resp.headers.get("Content-Length", 0))
+            _log(f"Content-Length: {total}")
             downloaded = 0
             with open(update_path, "wb") as f:
                 while True:
@@ -189,16 +204,34 @@ def download_update(progress_cb=None):
                     downloaded += len(chunk)
                     if progress_cb and total > 0:
                         progress_cb(downloaded, total)
+            _log(f"Descargados: {downloaded} bytes")
 
         # Validate downloaded file is a real PE executable
         with open(update_path, "rb") as f:
             header = f.read(2)
+        _log(f"Header: {header}")
         if header != b"MZ":
+            _log("ERROR: Header no es MZ — archivo corrupto")
             update_path.unlink()
             return None
 
+        file_size = update_path.stat().st_size
+        _log(f"Archivo guardado OK: {file_size} bytes")
+
+        # Remove Zone.Identifier IMMEDIATELY after download
+        try:
+            subprocess.run(
+                ["powershell", "-Command", f'Unblock-File -Path "{update_path}"'],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                capture_output=True, timeout=10
+            )
+            _log("Unblock-File ejecutado OK")
+        except Exception as e:
+            _log(f"Unblock-File fallo: {e}")
+
         return update_path
-    except (URLError, HTTPError, OSError):
+    except (URLError, HTTPError, OSError) as e:
+        _log(f"ERROR descarga: {e}")
         if update_path.exists():
             update_path.unlink()
         return None
@@ -215,17 +248,21 @@ def apply_update_and_restart():
 
     # Remove Windows "downloaded from internet" block before anything else
     try:
-        ads = str(update_path) + ":Zone.Identifier"
-        if os.path.exists(ads):
-            os.remove(ads)
+        subprocess.run(
+            ["powershell", "-Command", f'Unblock-File -Path "{update_path}"'],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            capture_output=True, timeout=10
+        )
     except Exception:
         pass
 
     bat_path = exe_path.parent / "_update.bat"
     log_path = exe_path.parent / "_update.log"
     bat_content = f'''@echo off
-echo Actualizando JiraBoard... > "{log_path}"
-echo %date% %time% >> "{log_path}"
+echo === INICIO ACTUALIZACION === > "{log_path}"
+echo Fecha: %date% %time% >> "{log_path}"
+echo Exe actual: {exe_path} >> "{log_path}"
+echo Update: {update_path} >> "{log_path}"
 
 REM Wait for old process to fully exit (up to 30 seconds)
 set RETRIES=0
@@ -243,13 +280,16 @@ if %errorlevel%==0 (
 echo Proceso cerrado OK (intentos: %RETRIES%) >> "{log_path}"
 
 REM Clean leftover _MEI temp folders from PyInstaller
+echo Limpiando carpetas _MEI... >> "{log_path}"
 for /d %%D in ("%TEMP%\\_MEI*") do (
+    echo   Eliminando: %%D >> "{log_path}"
     rmdir /s /q "%%D" 2>nul
 )
 echo Limpieza _MEI completada >> "{log_path}"
 
-REM Remove Zone.Identifier ADS from downloaded file
-echo.>"{update_path}:Zone.Identifier" 2>nul
+REM Unblock downloaded file using PowerShell
+echo Desbloqueando archivo descargado... >> "{log_path}"
+powershell -Command "Unblock-File -Path '{update_path}'" >> "{log_path}" 2>&1
 
 REM Try to delete old exe (retry up to 15 times for OneDrive locks)
 set RETRIES=0
@@ -258,20 +298,22 @@ del /F "{exe_path}" 2>nul
 if exist "{exe_path}" (
     set /a RETRIES+=1
     if %RETRIES% GEQ 15 (
-        echo ERROR: No se pudo eliminar exe antiguo >> "{log_path}"
+        echo ERROR: No se pudo eliminar exe antiguo tras 15 intentos >> "{log_path}"
         goto cleanup
     )
     ping 127.0.0.1 -n 2 > nul
     goto delloop
 )
-echo Exe antiguo eliminado OK >> "{log_path}"
+echo Exe antiguo eliminado OK (intentos: %RETRIES%) >> "{log_path}"
 
 REM Copy new exe using binary copy (more reliable than move on OneDrive)
-copy /B /Y "{update_path}" "{exe_path}" >nul
+echo Copiando update a destino... >> "{log_path}"
+copy /B /Y "{update_path}" "{exe_path}" >nul 2>>"{log_path}"
 if errorlevel 1 (
     echo ERROR: copy fallo >> "{log_path}"
     goto cleanup
 )
+echo Copy completado >> "{log_path}"
 
 REM Verify sizes match
 for %%A in ("{update_path}") do set SRC_SIZE=%%~zA
@@ -285,13 +327,15 @@ if not "%SRC_SIZE%"=="%DST_SIZE%" (
 REM Delete the update copy
 del /F "{update_path}" 2>nul
 
-REM Remove Zone.Identifier from final exe too
-echo.>"{exe_path}:Zone.Identifier" 2>nul
+REM Unblock final exe too
+echo Desbloqueando exe final... >> "{log_path}"
+powershell -Command "Unblock-File -Path '{exe_path}'" >> "{log_path}" 2>&1
 
-echo Lanzando exe actualizado >> "{log_path}"
+echo Lanzando exe actualizado... >> "{log_path}"
 
 REM Launch updated exe
 start "" "{exe_path}"
+echo Exe lanzado OK >> "{log_path}"
 
 :cleanup
 del "%~f0"
