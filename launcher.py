@@ -348,13 +348,26 @@ echo Forzando lectura completa del exe para cache... >> "{log_path}"
 powershell -Command "[IO.File]::ReadAllBytes('{exe_path}').Length" >> "{log_path}" 2>&1
 
 REM Wait for OneDrive sync and Defender scan to complete
-echo Esperando sincronizacion (15s)... >> "{log_path}"
-ping 127.0.0.1 -n 16 > nul
+echo Esperando sincronizacion (8s)... >> "{log_path}"
+ping 127.0.0.1 -n 9 > nul
+
+REM Kill any previous JiraBoard_local.exe still running
+set "LOCAL_EXE=%TEMP%\\JiraBoard_local.exe"
+echo Matando instancias previas de JiraBoard_local.exe... >> "{log_path}"
+taskkill /F /IM "JiraBoard_local.exe" >nul 2>&1
+ping 127.0.0.1 -n 2 > nul
+del /F "%LOCAL_EXE%" >nul 2>&1
+echo Limpieza previa OK >> "{log_path}"
 
 REM Copy exe to a LOCAL temp location to bypass OneDrive filter driver
-set "LOCAL_EXE=%TEMP%\\JiraBoard_local.exe"
 echo Copiando exe a ubicacion local: %LOCAL_EXE% >> "{log_path}"
 copy /B /Y "{exe_path}" "%LOCAL_EXE%" >nul 2>>"{log_path}"
+if errorlevel 1 (
+    echo ERROR: No se pudo copiar a local, lanzando desde OneDrive... >> "{log_path}"
+    start "" "{exe_path}"
+    goto cleanup
+)
+echo Copia local OK >> "{log_path}"
 powershell -Command "Unblock-File -Path '%LOCAL_EXE%'; Remove-Item -Path '%LOCAL_EXE%:Zone.Identifier' -ErrorAction SilentlyContinue" >> "{log_path}" 2>&1
 
 REM Set data dir to original exe location so DB/screenshots are found
@@ -365,7 +378,6 @@ REM Launch from local copy (bypasses OneDrive ReparsePoint filter driver)
 echo Lanzando desde copia local... >> "{log_path}"
 start "" "%LOCAL_EXE%"
 echo Exe lanzado OK >> "{log_path}"
-REM The local copy will find data at the original exe's parent dir
 
 :cleanup
 del "%~f0"
