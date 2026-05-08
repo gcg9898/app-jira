@@ -216,10 +216,49 @@ def apply_update_and_restart():
     bat_path = exe_path.parent / "_update.bat"
     bat_content = f'''@echo off
 echo Actualizando JiraBoard...
-ping 127.0.0.1 -n 3 > nul
-del "{exe_path}"
-move "{update_path}" "{exe_path}"
+
+REM Wait for old process to fully exit (up to 30 seconds)
+set RETRIES=0
+:waitloop
+tasklist /FI "IMAGENAME eq {exe_path.name}" 2>NUL | find /I "{exe_path.name}" >NUL
+if %errorlevel%==0 (
+    set /a RETRIES+=1
+    if %RETRIES% GEQ 30 (
+        echo ERROR: No se pudo cerrar el proceso antiguo.
+        pause
+        goto cleanup
+    )
+    ping 127.0.0.1 -n 2 > nul
+    goto waitloop
+)
+
+REM Try to delete old exe (retry up to 10 times for OneDrive locks)
+set RETRIES=0
+:delloop
+del /F "{exe_path}" 2>nul
+if exist "{exe_path}" (
+    set /a RETRIES+=1
+    if %RETRIES% GEQ 10 (
+        echo ERROR: No se pudo eliminar el exe antiguo.
+        pause
+        goto cleanup
+    )
+    ping 127.0.0.1 -n 2 > nul
+    goto delloop
+)
+
+REM Move new exe into place
+move /Y "{update_path}" "{exe_path}"
+if errorlevel 1 (
+    echo ERROR: No se pudo mover la actualizacion.
+    pause
+    goto cleanup
+)
+
+REM Launch updated exe
 start "" "{exe_path}"
+
+:cleanup
 del "%~f0"
 '''
     bat_path.write_text(bat_content, encoding="utf-8")
