@@ -324,12 +324,34 @@ if not "%SRC_SIZE%"=="%DST_SIZE%" (
     goto cleanup
 )
 
+REM Verify file hash matches
+echo Verificando integridad con hash... >> "{log_path}"
+powershell -Command "$h1=(Get-FileHash '{update_path}' -Algorithm MD5).Hash; $h2=(Get-FileHash '{exe_path}' -Algorithm MD5).Hash; Write-Output \\"Hash update: $h1\\"; Write-Output \\"Hash destino: $h2\\"; if($h1 -ne $h2){{exit 1}}" >> "{log_path}" 2>&1
+if errorlevel 1 (
+    echo ERROR: Hashes no coinciden - archivo corrupto >> "{log_path}"
+    goto cleanup
+)
+echo Hashes verificados OK >> "{log_path}"
+
 REM Delete the update copy
 del /F "{update_path}" 2>nul
 
 REM Unblock final exe too
 echo Desbloqueando exe final... >> "{log_path}"
 powershell -Command "Unblock-File -Path '{exe_path}'" >> "{log_path}" 2>&1
+
+REM Wait for OneDrive sync to settle (critical for OneDrive folders)
+echo Esperando sincronizacion OneDrive (5s)... >> "{log_path}"
+ping 127.0.0.1 -n 6 > nul
+
+REM Verify exe is readable before launching
+echo Verificando que el exe es legible... >> "{log_path}"
+powershell -Command "$f=[System.IO.File]::ReadAllBytes('{exe_path}'); Write-Output \\"Bytes leidos: $($f.Length)\\"; if($f[0] -ne 77 -or $f[1] -ne 90){{Write-Output 'ERROR: No es PE valido'; exit 1}}" >> "{log_path}" 2>&1
+if errorlevel 1 (
+    echo ERROR: Exe no es valido tras la copia >> "{log_path}"
+    goto cleanup
+)
+echo Exe verificado y listo >> "{log_path}"
 
 echo Lanzando exe actualizado... >> "{log_path}"
 
