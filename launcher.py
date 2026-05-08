@@ -575,15 +575,19 @@ class LauncherApp:
                 fg="#e74c3c")
             return
 
-        if local_ver is None or local_ver != remote_ver:
+        is_new = local_ver is None or local_ver != remote_ver
+
+        if not getattr(sys, 'frozen', False):
+            tag = "Nueva versión" if is_new else "Versión actual"
+            self.update_status_label.config(
+                text=f"{tag} {remote_ver} (actualización solo disponible en .exe)",
+                fg="#f5a623" if is_new else "#16c79a")
+            return
+
+        if is_new:
             self.update_status_label.config(
                 text=f"Nueva versión disponible: {remote_ver}",
                 fg="#f5a623")
-            if not getattr(sys, 'frozen', False):
-                self.update_status_label.config(
-                    text=f"Nueva versión {remote_ver} (actualización solo disponible en .exe)",
-                    fg="#f5a623")
-                return
             if messagebox.askyesno("Actualización disponible",
                                    f"Hay una nueva versión ({remote_ver}).\n\n"
                                    "¿Descargar e instalar ahora?\n"
@@ -593,6 +597,11 @@ class LauncherApp:
             self.update_status_label.config(
                 text=f"Ya tienes la última versión ({local_ver})",
                 fg="#16c79a")
+            if messagebox.askyesno("Reinstalar versión actual",
+                                   f"Ya tienes la última versión ({local_ver}).\n\n"
+                                   "¿Quieres descargarla de nuevo e instalarla?\n"
+                                   "Esto puede solucionar errores de ejecución."):
+                self._start_download()
 
     def _start_download(self):
         self.update_btn.config(state="disabled", text="Descargando...")
