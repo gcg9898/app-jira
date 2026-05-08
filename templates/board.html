@@ -658,13 +658,17 @@
         // DRAG & DROP COLUMNAS
         // ═══════════════════════════════════════════
         let draggedColId = null;
+        let colDragAllowed = false;
+
+        // Track where mousedown started to only allow column drag from header
+        document.addEventListener('mousedown', e => {
+            colDragAllowed = !!e.target.closest('.column-header');
+        });
 
         function colDragStart(event, colId) {
-            // Only allow column drag from the header area
-            const header = event.target.closest('.column-header');
-            if (!header) { event.preventDefault(); return; }
+            if (!colDragAllowed) { event.preventDefault(); return; }
             draggedColId = colId;
-            draggedTaskId = null; // prevent task drag conflict
+            draggedTaskId = null;
             event.dataTransfer.effectAllowed = 'move';
             event.dataTransfer.setData('text/plain', 'col-' + colId);
             setTimeout(() => {
@@ -676,20 +680,20 @@
         function colDragOver(event) {
             if (!draggedColId) return;
             event.preventDefault();
-            const col = event.currentTarget.closest('.column');
-            if (col) col.classList.add('col-drag-over');
+            event.stopPropagation();
+            const col = event.currentTarget;
+            col.classList.add('col-drag-over');
         }
 
         function colDragLeave(event) {
-            const col = event.currentTarget.closest('.column');
-            if (col) col.classList.remove('col-drag-over');
+            event.currentTarget.classList.remove('col-drag-over');
         }
 
         async function colDrop(event) {
             event.preventDefault();
             event.stopPropagation();
             if (!draggedColId) return;
-            const targetCol = event.currentTarget.closest('.column');
+            const targetCol = event.currentTarget;
             if (!targetCol) return;
             targetCol.classList.remove('col-drag-over');
 
@@ -739,6 +743,7 @@
         }
 
         function dragOver(event) {
+            if (draggedColId) return; // let column handler deal with it
             event.preventDefault();
             event.currentTarget.classList.add("drag-over");
         }
@@ -750,6 +755,7 @@
         async function dropTask(event) {
             event.preventDefault();
             event.currentTarget.classList.remove("drag-over");
+            if (draggedColId) return; // column drop, not task
             if (!draggedTaskId) return;
 
             const colId = parseInt(event.currentTarget.dataset.colId);
