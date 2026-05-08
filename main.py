@@ -8,6 +8,7 @@ Usage:
   JiraBoard.exe --mode=newtask -> New task popup only
 """
 import sys
+import os
 import multiprocessing
 
 
@@ -28,6 +29,10 @@ def run_launcher():
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+
+    # Pre-check mode: just extract DLLs and exit (used by updater for Defender pre-scan)
+    if os.environ.get("JIRABOARD_PRECHECK"):
+        sys.exit(0)
 
     mode = "launcher"
     for arg in sys.argv[1:]:

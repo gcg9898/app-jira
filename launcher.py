@@ -347,35 +347,49 @@ REM Force Windows to fully read and cache the file (triggers Defender scan early
 echo Forzando lectura completa del exe para cache... >> "{log_path}"
 powershell -Command "[IO.File]::ReadAllBytes('{exe_path}').Length" >> "{log_path}" 2>&1
 
-REM Wait for OneDrive sync and Defender scan to complete
-echo Esperando sincronizacion (8s)... >> "{log_path}"
-ping 127.0.0.1 -n 9 > nul
+REM Wait for OneDrive sync to complete
+echo Esperando sincronizacion OneDrive (5s)... >> "{log_path}"
+ping 127.0.0.1 -n 6 > nul
 
-REM Kill any previous JiraBoard_local.exe still running
-set "LOCAL_EXE=%TEMP%\\JiraBoard_local.exe"
-echo Matando instancias previas de JiraBoard_local.exe... >> "{log_path}"
-taskkill /F /IM "JiraBoard_local.exe" >nul 2>&1
+REM Use %APPDATA%\JiraBoard as the trusted install location (not TEMP)
+set "APP_DIR=%APPDATA%\\JiraBoard"
+set "LOCAL_EXE=%APP_DIR%\\JiraBoard.exe"
+echo Directorio local: %APP_DIR% >> "{log_path}"
+mkdir "%APP_DIR%" 2>nul
+
+REM Kill any previous instance running from that location
+taskkill /F /IM "JiraBoard.exe" >nul 2>&1
 ping 127.0.0.1 -n 2 > nul
-del /F "%LOCAL_EXE%" >nul 2>&1
-echo Limpieza previa OK >> "{log_path}"
 
-REM Copy exe to a LOCAL temp location to bypass OneDrive filter driver
-echo Copiando exe a ubicacion local: %LOCAL_EXE% >> "{log_path}"
+REM Copy exe to trusted AppData location
+echo Copiando exe a: %LOCAL_EXE% >> "{log_path}"
 copy /B /Y "{exe_path}" "%LOCAL_EXE%" >nul 2>>"{log_path}"
 if errorlevel 1 (
-    echo ERROR: No se pudo copiar a local, lanzando desde OneDrive... >> "{log_path}"
+    echo ERROR copia a AppData, lanzando desde OneDrive... >> "{log_path}"
     start "" "{exe_path}"
     goto cleanup
 )
-echo Copia local OK >> "{log_path}"
+echo Copia AppData OK >> "{log_path}"
+
+REM Unblock in AppData location
 powershell -Command "Unblock-File -Path '%LOCAL_EXE%'; Remove-Item -Path '%LOCAL_EXE%:Zone.Identifier' -ErrorAction SilentlyContinue" >> "{log_path}" 2>&1
 
-REM Set data dir to original exe location so DB/screenshots are found
+REM Pre-run exe to trigger PyInstaller extraction and Defender pre-scan
+REM This uses --mode=check (silently exits) so DLLs get extracted and trusted
+echo Pre-extrayendo DLLs (Defender pre-scan)... >> "{log_path}"
 set "JIRABOARD_DATA_DIR={exe_path.parent}"
-echo DATA_DIR: %JIRABOARD_DATA_DIR% >> "{log_path}"
+set "JIRABOARD_PRECHECK=1"
+start /wait /min "" "%LOCAL_EXE%"
+echo Pre-extraccion completada >> "{log_path}"
 
-REM Launch from local copy (bypasses OneDrive ReparsePoint filter driver)
-echo Lanzando desde copia local... >> "{log_path}"
+REM Unblock all extracted DLLs in _MEI folders
+echo Desbloqueando DLLs extraidas... >> "{log_path}"
+for /d %%D in ("%TEMP%\\_MEI*") do (
+    powershell -Command "Get-ChildItem '%%D' -Filter *.dll | ForEach-Object {{ Unblock-File $_.FullName }}" >> "{log_path}" 2>&1
+)
+
+REM Now launch normally
+echo Lanzando JiraBoard desde AppData... >> "{log_path}"
 start "" "%LOCAL_EXE%"
 echo Exe lanzado OK >> "{log_path}"
 
