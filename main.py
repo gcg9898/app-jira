@@ -14,7 +14,7 @@ import multiprocessing
 
 def run_flask():
     import app as flask_module
-    flask_module.app.run(host="127.0.0.1", port=5000, debug=False, use_reloader=False)
+    flask_module.app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 
 
 def run_tray():

@@ -31,8 +31,21 @@ uv run --with pyinstaller --with flask --with requests --with selenium ^
     --hidden-import jinja2 ^
     --hidden-import requests ^
     --hidden-import selenium ^
+    --hidden-import selenium.webdriver ^
+    --hidden-import selenium.webdriver.chrome ^
+    --hidden-import selenium.webdriver.chrome.webdriver ^
+    --hidden-import selenium.webdriver.chrome.options ^
+    --hidden-import selenium.webdriver.chrome.service ^
+    --hidden-import selenium.webdriver.common ^
+    --hidden-import selenium.webdriver.common.by ^
+    --hidden-import selenium.webdriver.support ^
+    --hidden-import selenium.webdriver.support.ui ^
+    --hidden-import selenium.webdriver.support.expected_conditions ^
     --hidden-import webdriver_manager ^
     --hidden-import webdriver_manager.chrome ^
+    --hidden-import webdriver_manager.core ^
+    --hidden-import webdriver_manager.core.driver_cache ^
+    --hidden-import webdriver_manager.core.os_manager ^
     --hidden-import keyboard ^
     --hidden-import pystray ^
     --hidden-import PIL ^
