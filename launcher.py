@@ -334,9 +334,22 @@ REM Unblock final exe
 echo Desbloqueando exe final... >> "{log_path}"
 powershell -Command "Unblock-File -Path '{exe_path}'; Remove-Item -Path '{exe_path}:Zone.Identifier' -ErrorAction SilentlyContinue" >> "{log_path}" 2>&1
 
-REM Wait for OneDrive sync to settle
-echo Esperando sincronizacion OneDrive (5s)... >> "{log_path}"
-ping 127.0.0.1 -n 6 > nul
+REM Pin file as "Always keep on this device" for OneDrive
+echo Pineando archivo en disco local (attrib +P -U)... >> "{log_path}"
+attrib -U +P "{exe_path}" >> "{log_path}" 2>&1
+echo Attrib result: %errorlevel% >> "{log_path}"
+
+REM Wait for OneDrive sync and file to be fully available locally
+echo Esperando que el archivo este disponible localmente (8s)... >> "{log_path}"
+ping 127.0.0.1 -n 9 > nul
+
+REM Verify the file is actually available (not a cloud placeholder)
+echo Verificando disponibilidad local... >> "{log_path}"
+powershell -Command "$item = Get-Item '{exe_path}'; $attr = $item.Attributes.ToString(); Write-Output \\"Attributes: $attr\\"; $size = $item.Length; Write-Output \\"Size: $size\\"; if($size -lt 1000){{ Write-Output 'WARN: archivo parece ser placeholder de OneDrive'; exit 1 }}" >> "{log_path}" 2>&1
+if errorlevel 1 (
+    echo WARN: Esperando 10s adicionales para OneDrive... >> "{log_path}"
+    ping 127.0.0.1 -n 11 > nul
+)
 
 echo Lanzando exe actualizado... >> "{log_path}"
 
