@@ -642,6 +642,7 @@
                     <div class="task-meta">
                         <span class="priority-badge ${priorityClass}" onclick="openPriorityDropdown(event, ${task.id})">${task.priority || 'Normal'}</span>
                         ${task.priority_override ? `<button onclick="resetPriority(event, ${task.id})" title="Restaurar prioridad original de Jira" style="background:none;border:none;color:#888;cursor:pointer;font-size:0.7rem;padding:0 2px;">↩</button>` : ""}
+                        ${task.column_override ? `<button onclick="resetColumn(event, ${task.id})" title="Restaurar columna original de Jira" style="background:none;border:none;color:#e8a838;cursor:pointer;font-size:0.7rem;padding:0 2px;">⇄</button>` : ""}
                         ${task.labels ? `<span style="font-size:0.7rem;color:#888">🏷 ${escapeHtml(task.labels)}</span>` : ""}
                         ${totalTickets > 0 ? `<span style="font-size:0.7rem;color:#888">☑ ${doneCount}/${totalTickets}</span>` : ""}
                     </div>
@@ -1005,6 +1006,15 @@
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ priority: "" })
+            });
+            loadBoard();
+        }
+
+        async function resetColumn(event, taskId) {
+            event.stopPropagation();
+            await fetch(`/api/tasks/${taskId}/restore-column`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" }
             });
             loadBoard();
         }

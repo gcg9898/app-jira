@@ -89,6 +89,8 @@ def init_db():
             last_comment TEXT DEFAULT '',
             screenshot TEXT DEFAULT '',
             jira_updated TEXT DEFAULT '',
+            jira_column_id INTEGER DEFAULT NULL,
+            column_override INTEGER DEFAULT 0,
             link TEXT DEFAULT '',
             position INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT '',
@@ -132,6 +134,10 @@ def migrate_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN link TEXT DEFAULT ''")
     if "priority_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN priority_override TEXT DEFAULT ''")
+    if "jira_column_id" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN jira_column_id INTEGER DEFAULT NULL")
+    if "column_override" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN column_override INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -334,8 +340,35 @@ def update_task_priority(task_id):
 def move_task(task_id):
     data = request.json
     conn = get_db()
-    conn.execute("UPDATE tasks SET column_id=?, position=? WHERE id=?",
-                 (data["column_id"], data["position"], task_id))
+    # Check if this is a Jira task being moved to a different column than jira_column_id
+    task = conn.execute("SELECT jira_key, jira_column_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+    new_col = data["column_id"]
+    if task and task["jira_key"]:
+        jira_col = task["jira_column_id"]
+        override = 1 if (jira_col is not None and new_col != jira_col) else 0
+        conn.execute("UPDATE tasks SET column_id=?, position=?, column_override=? WHERE id=?",
+                     (new_col, data["position"], override, task_id))
+    else:
+        conn.execute("UPDATE tasks SET column_id=?, position=? WHERE id=?",
+                     (new_col, data["position"], task_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/tasks/<int:task_id>/restore-column", methods=["PUT"])
+def restore_column(task_id):
+    """Reset a Jira task back to its Jira-status-based column."""
+    conn = get_db()
+    task = conn.execute("SELECT jira_column_id FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if not task or task["jira_column_id"] is None:
+        conn.close()
+        return jsonify({"error": "No jira column info"}), 400
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    conn.execute(
+        "UPDATE tasks SET column_id=?, column_override=0, updated_at=? WHERE id=?",
+        (task["jira_column_id"], now, task_id)
+    )
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -466,24 +499,33 @@ def sync_jira():
             last_comment = f"[{autor}] {body}"
 
         # Ver si ya existe
-        existing = conn.execute("SELECT id FROM tasks WHERE jira_key = ?", (key,)).fetchone()
+        existing = conn.execute("SELECT id, column_override FROM tasks WHERE jira_key = ?", (key,)).fetchone()
         col_id = get_column_id(status)
 
         if existing:
-            conn.execute(
-                """UPDATE tasks SET title=?, description=?, jira_status=?, priority=?,
-                   labels=?, last_comment=?, column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
-                (summary, desc, status, priority, labels, last_comment, col_id, jira_updated, now, existing["id"])
-            )
+            if existing["column_override"]:
+                # User moved it manually — keep their column, only update jira_column_id
+                conn.execute(
+                    """UPDATE tasks SET title=?, description=?, jira_status=?, priority=?,
+                       labels=?, last_comment=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
+                    (summary, desc, status, priority, labels, last_comment, col_id, jira_updated, now, existing["id"])
+                )
+            else:
+                # No override — sync column as usual
+                conn.execute(
+                    """UPDATE tasks SET title=?, description=?, jira_status=?, priority=?,
+                       labels=?, last_comment=?, column_id=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
+                    (summary, desc, status, priority, labels, last_comment, col_id, col_id, jira_updated, now, existing["id"])
+                )
         else:
             max_pos = conn.execute(
                 "SELECT COALESCE(MAX(position), -1) FROM tasks WHERE column_id = ?", (col_id,)
             ).fetchone()[0]
             conn.execute(
-                """INSERT INTO tasks (column_id, title, description, jira_key, jira_status,
+                """INSERT INTO tasks (column_id, jira_column_id, title, description, jira_key, jira_status,
                    priority, labels, last_comment, jira_updated, position, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (col_id, summary, desc, key, status, priority, labels, last_comment,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (col_id, col_id, summary, desc, key, status, priority, labels, last_comment,
                  jira_updated, max_pos + 1, now, now)
             )
             imported += 1
@@ -494,8 +536,8 @@ def sync_jira():
     all_jira_tasks = conn.execute("SELECT id, jira_key, column_id FROM tasks WHERE jira_key != ''").fetchall()
     for task in all_jira_tasks:
         if task["jira_key"] not in synced_keys and task["column_id"] != hecho_id:
-            conn.execute("UPDATE tasks SET column_id=?, jira_status='Finalizado', updated_at=? WHERE id=?",
-                         (hecho_id, now, task["id"]))
+            conn.execute("UPDATE tasks SET column_id=?, jira_column_id=?, column_override=0, jira_status='Finalizado', updated_at=? WHERE id=?",
+                         (hecho_id, hecho_id, now, task["id"]))
 
     conn.commit()
     conn.close()
