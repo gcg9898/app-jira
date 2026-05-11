@@ -733,6 +733,7 @@ class LauncherApp:
         env_data["JIRA_BASE_URL"] = self.url_entry.get().strip() or "https://jiraitsm.eulen.com"
         env_data["JIRA_FILTER_ID"] = self.filter_entry.get().strip() or "30004"
         save_env(env_data)
+        self.restart_flask()
 
     def check_for_updates(self):
         """Check GitHub for a newer version and offer to update."""

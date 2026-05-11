@@ -641,8 +641,8 @@
                     ${task.description ? `<div class="task-desc">${escapeHtml(task.description)}</div>` : ""}
                     <div class="task-meta">
                         <span class="priority-badge ${priorityClass}" onclick="openPriorityDropdown(event, ${task.id})">${task.priority || 'Normal'}</span>
-                        ${task.priority_override ? `<button onclick="resetPriority(event, ${task.id})" title="Restaurar prioridad original de Jira" style="background:none;border:none;color:#888;cursor:pointer;font-size:0.7rem;padding:0 2px;">↩</button>` : ""}
-                        ${task.column_override ? `<button onclick="resetColumn(event, ${task.id})" title="Restaurar columna original de Jira" style="background:none;border:none;color:#e8a838;cursor:pointer;font-size:0.7rem;padding:0 2px;">⇄</button>` : ""}
+                        ${task.priority_override ? `<button onclick="resetPriority(event, ${task.id})" title="Has cambiado la prioridad manualmente. Pulsa para volver a la prioridad original de Jira (${escapeHtml(task.priority)})" style="background:none;border:none;color:#888;cursor:pointer;font-size:0.7rem;padding:0 2px;">↩</button>` : ""}
+                        ${task.column_override ? `<button onclick="resetColumn(event, ${task.id})" title="Has movido esta tarjeta de columna manualmente. Pulsa para devolverla a la columna que le corresponde según su estado en Jira" style="background:none;border:none;color:#e8a838;cursor:pointer;font-size:0.7rem;padding:0 2px;">⇄</button>` : ""}
                         ${task.labels ? `<span style="font-size:0.7rem;color:#888">🏷 ${escapeHtml(task.labels)}</span>` : ""}
                         ${totalTickets > 0 ? `<span style="font-size:0.7rem;color:#888">☑ ${doneCount}/${totalTickets}</span>` : ""}
                     </div>
