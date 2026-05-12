@@ -31,6 +31,9 @@ SCREENSHOTS_DIR = _DATA_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
 SCREENSHOT_LOG = _DATA_DIR / "screenshot_errors.log"
 
+# Screenshot progress tracking
+_screenshot_progress = {"total": 0, "done": 0, "running": False, "current": ""}
+
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURACIÓN JIRA (desde .env)
 # ═══════════════════════════════════════════════════════════════
@@ -150,6 +153,11 @@ migrate_db()
 @app.route("/")
 def index():
     return render_template("board.html")
+
+
+@app.route("/api/screenshot-progress")
+def screenshot_progress():
+    return jsonify(_screenshot_progress)
 
 
 @app.route("/screenshots/<path:filename>")
@@ -544,6 +552,10 @@ def sync_jira():
 
     # Take screenshots asynchronously in background thread
     issue_keys = [issue["key"] for issue in all_issues]
+    _screenshot_progress["total"] = len(issue_keys)
+    _screenshot_progress["done"] = 0
+    _screenshot_progress["running"] = True
+    _screenshot_progress["current"] = ""
     import threading
     t = threading.Thread(target=_take_screenshots_background, args=(issue_keys,), daemon=True)
     t.start()
@@ -558,6 +570,7 @@ def _take_screenshots_background(issue_keys):
 
     num_workers = min(4, math.ceil(len(issue_keys) / 5))
     if num_workers == 0:
+        _screenshot_progress["running"] = False
         return
 
     chunks = [issue_keys[i::num_workers] for i in range(num_workers)]
@@ -569,6 +582,7 @@ def _take_screenshots_background(issue_keys):
                 f.result()
             except Exception as e:
                 print(f"  Screenshot worker error: {e}")
+    _screenshot_progress["running"] = False
 
 
 def _screenshot_worker(keys):
@@ -636,7 +650,10 @@ def _screenshot_worker(keys):
                 driver.save_screenshot(str(screenshot_path))
                 conn.execute("UPDATE tasks SET screenshot=? WHERE jira_key=?", (screenshot_file, key))
                 conn.commit()
+                _screenshot_progress["done"] += 1
+                _screenshot_progress["current"] = key
             except Exception as e:
+                _screenshot_progress["done"] += 1
                 _log_error(f"Screenshot error for {key}: {e}")
         conn.close()
     except Exception as e:

@@ -49,6 +49,39 @@
         .btn-sync:hover { background: #357ABD; }
         .btn-sync.loading { opacity: 0.6; pointer-events: none; }
 
+        /* Screenshot progress bar */
+        .sync-progress {
+            display: none;
+            background: #1e1e3a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 8px 14px;
+            margin-left: 10px;
+            min-width: 220px;
+            align-items: center;
+            gap: 8px;
+        }
+        .sync-progress.active { display: flex; }
+        .sync-progress-bar {
+            flex: 1;
+            height: 8px;
+            background: #2a2a4a;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .sync-progress-fill {
+            height: 100%;
+            background: #4A90D9;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+        .sync-progress-text {
+            font-size: 0.75rem;
+            color: #aaa;
+            white-space: nowrap;
+        }
+
         /* Board */
         .board {
             display: flex;
@@ -462,6 +495,10 @@
         <h1>⚡ Jira Board</h1>
         <div class="header-actions">
             <button class="btn btn-sync" id="syncBtn" onclick="syncJira()">🔄 Sync Jira</button>
+            <div class="sync-progress" id="syncProgress">
+                <div class="sync-progress-bar"><div class="sync-progress-fill" id="syncProgressFill"></div></div>
+                <span class="sync-progress-text" id="syncProgressText">0/0</span>
+            </div>
             <button class="btn btn-secondary" id="sortBtn" onclick="toggleSort()">📊 Orden: Prioridad</button>
             <button class="btn btn-secondary" onclick="addColumn()">+ Columna</button>
         </div>
@@ -893,6 +930,10 @@
         // ═══════════════════════════════════════════
         async function syncJira() {
             const btn = document.getElementById("syncBtn");
+            const progressEl = document.getElementById("syncProgress");
+            const progressFill = document.getElementById("syncProgressFill");
+            const progressText = document.getElementById("syncProgressText");
+
             btn.classList.add("loading");
             btn.textContent = "⏳ Sincronizando...";
             try {
@@ -901,14 +942,47 @@
                 if (data.ok) {
                     showToast(`✓ Sincronizado: ${data.total} incidencias (${data.imported} nuevas)`);
                     loadBoard();
+
+                    // Start polling screenshot progress
+                    progressEl.classList.add("active");
+                    progressFill.style.width = "0%";
+                    progressText.textContent = `📸 0/${data.total}`;
+                    btn.textContent = "📸 Capturas...";
+
+                    const pollInterval = setInterval(async () => {
+                        try {
+                            const pr = await fetch("/api/screenshot-progress");
+                            const pg = await pr.json();
+                            const pct = pg.total > 0 ? Math.round((pg.done / pg.total) * 100) : 0;
+                            progressFill.style.width = pct + "%";
+                            progressText.textContent = `📸 ${pg.done}/${pg.total}${pg.current ? ' · ' + pg.current : ''}`;
+
+                            if (!pg.running) {
+                                clearInterval(pollInterval);
+                                progressFill.style.width = "100%";
+                                progressText.textContent = `✓ ${pg.done}/${pg.total} capturas`;
+                                btn.classList.remove("loading");
+                                btn.textContent = "🔄 Sync Jira";
+                                loadBoard();
+                                setTimeout(() => progressEl.classList.remove("active"), 3000);
+                            }
+                        } catch (e) {
+                            clearInterval(pollInterval);
+                            progressEl.classList.remove("active");
+                            btn.classList.remove("loading");
+                            btn.textContent = "🔄 Sync Jira";
+                        }
+                    }, 2000);
                 } else {
                     showToast("✖ Error: " + (data.error || "desconocido"));
+                    btn.classList.remove("loading");
+                    btn.textContent = "🔄 Sync Jira";
                 }
             } catch (e) {
                 showToast("✖ Error de conexión");
+                btn.classList.remove("loading");
+                btn.textContent = "🔄 Sync Jira";
             }
-            btn.classList.remove("loading");
-            btn.textContent = "🔄 Sync Jira";
         }
 
         // ═══════════════════════════════════════════
