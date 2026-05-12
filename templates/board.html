@@ -49,37 +49,46 @@
         .btn-sync:hover { background: #357ABD; }
         .btn-sync.loading { opacity: 0.6; pointer-events: none; }
 
-        /* Screenshot progress bar */
+        /* Sync progress bar */
         .sync-progress {
             display: none;
-            background: #1e1e3a;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 8px 14px;
-            margin-left: 10px;
-            min-width: 220px;
-            align-items: center;
-            gap: 8px;
+            background: #1a1a2e;
+            border-bottom: 1px solid #2a2a4a;
+            padding: 10px 24px 12px;
         }
-        .sync-progress.active { display: flex; }
+        .sync-progress.active { display: block; }
+        .sync-progress-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+        .sync-progress-phase {
+            font-size: 0.8rem;
+            color: #16c79a;
+            font-weight: 600;
+        }
+        .sync-progress-counter {
+            font-size: 0.75rem;
+            color: #aaa;
+        }
         .sync-progress-bar {
-            flex: 1;
-            height: 8px;
+            height: 6px;
             background: #2a2a4a;
-            border-radius: 4px;
+            border-radius: 3px;
             overflow: hidden;
+            margin-bottom: 6px;
         }
         .sync-progress-fill {
             height: 100%;
-            background: #4A90D9;
-            border-radius: 4px;
-            transition: width 0.3s ease;
+            background: linear-gradient(90deg, #4A90D9, #16c79a);
+            border-radius: 3px;
+            transition: width 0.4s ease;
             width: 0%;
         }
-        .sync-progress-text {
-            font-size: 0.75rem;
-            color: #aaa;
-            white-space: nowrap;
+        .sync-progress-detail {
+            font-size: 0.72rem;
+            color: #666;
         }
 
         /* Board */
@@ -496,13 +505,18 @@
         <div class="header-actions">
             <button class="btn btn-sync" id="syncBtn" onclick="syncJira()">🔄 Sync Jira</button>
             <a href="/search" class="btn btn-secondary" style="text-decoration:none;">🔍 Buscar</a>
-            <div class="sync-progress" id="syncProgress">
-                <div class="sync-progress-bar"><div class="sync-progress-fill" id="syncProgressFill"></div></div>
-                <span class="sync-progress-text" id="syncProgressText">0/0</span>
-            </div>
             <button class="btn btn-secondary" id="sortBtn" onclick="toggleSort()">📊 Orden: Prioridad</button>
             <button class="btn btn-secondary" onclick="addColumn()">+ Columna</button>
         </div>
+    </div>
+
+    <div class="sync-progress" id="syncProgress">
+        <div class="sync-progress-header">
+            <span class="sync-progress-phase" id="syncProgressPhase">Sincronizando...</span>
+            <span class="sync-progress-counter" id="syncProgressCounter"></span>
+        </div>
+        <div class="sync-progress-bar"><div class="sync-progress-fill" id="syncProgressFill"></div></div>
+        <div class="sync-progress-detail" id="syncProgressDetail"></div>
     </div>
 
     <div class="filter-bar" id="filterBar">
@@ -933,13 +947,17 @@
             const btn = document.getElementById("syncBtn");
             const progressEl = document.getElementById("syncProgress");
             const progressFill = document.getElementById("syncProgressFill");
-            const progressText = document.getElementById("syncProgressText");
+            const phaseEl = document.getElementById("syncProgressPhase");
+            const counterEl = document.getElementById("syncProgressCounter");
+            const detailEl = document.getElementById("syncProgressDetail");
 
             btn.classList.add("loading");
             btn.textContent = "⏳ Sincronizando...";
             progressEl.classList.add("active");
             progressFill.style.width = "0%";
-            progressText.textContent = "Conectando con Jira...";
+            phaseEl.textContent = "Conectando con Jira...";
+            counterEl.textContent = "";
+            detailEl.textContent = "Estableciendo conexión con el servidor de Jira";
 
             // Start polling progress immediately
             const pollInterval = setInterval(async () => {
@@ -949,19 +967,31 @@
 
                     if (pg.phase === "fetching") {
                         progressFill.style.width = "5%";
-                        progressText.textContent = "🔍 " + pg.phase_text;
+                        phaseEl.textContent = "🔍 Obteniendo incidencias";
+                        counterEl.textContent = "";
+                        detailEl.textContent = "Descargando incidencias del filtro de Jira...";
                     } else if (pg.phase === "processing") {
                         const pct = pg.total > 0 ? 5 + Math.round((pg.done / pg.total) * 25) : 5;
                         progressFill.style.width = pct + "%";
-                        progressText.textContent = `⚙️ ${pg.done}/${pg.total}${pg.current ? ' · ' + pg.current : ''}`;
+                        phaseEl.textContent = "⚙️ Procesando incidencias";
+                        counterEl.textContent = `${pg.done} / ${pg.total}`;
+                        detailEl.textContent = pg.current
+                            ? `Actualizando ${pg.current} — estado, prioridad, etiquetas y comentarios`
+                            : "Sincronizando datos de incidencias con la base de datos local";
                     } else if (pg.phase === "screenshots") {
                         const pct = pg.total > 0 ? 30 + Math.round((pg.done / pg.total) * 70) : 30;
                         progressFill.style.width = pct + "%";
-                        progressText.textContent = `📸 ${pg.done}/${pg.total}${pg.current ? ' · ' + pg.current : ''}`;
+                        phaseEl.textContent = "📸 Capturando screenshots";
+                        counterEl.textContent = `${pg.done} / ${pg.total}`;
+                        detailEl.textContent = pg.current
+                            ? `Capturando pantalla de ${pg.current} con Selenium`
+                            : "Abriendo navegador para capturar las incidencias...";
                     } else if (pg.phase === "done") {
                         clearInterval(pollInterval);
                         progressFill.style.width = "100%";
-                        progressText.textContent = `✓ Completado`;
+                        phaseEl.textContent = "✓ Sincronización completada";
+                        counterEl.textContent = "";
+                        detailEl.textContent = "Todas las incidencias y capturas están actualizadas";
                         btn.classList.remove("loading");
                         btn.textContent = "🔄 Sync Jira";
                         loadBoard();
