@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Buscar - Jira Board</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f23;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+
+        .header {
+            background: #1a1a2e;
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid #2a2a4a;
+        }
+        .header h1 { font-size: 1.3rem; color: #16c79a; font-weight: 700; }
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+        .btn {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-secondary { background: #2a2a4a; color: #e0e0e0; }
+        .btn-secondary:hover { background: #3a3a5a; }
+
+        .search-container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .search-box {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .search-box input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-size: 1rem;
+            outline: none;
+        }
+        .search-box input:focus { border-color: #16c79a; }
+        .search-box input::placeholder { color: #555; }
+        .btn-search {
+            padding: 12px 24px;
+            background: #16c79a;
+            color: #0f0f23;
+            border: none;
+            border-radius: 8px;
+            font-weight: 700;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+        .btn-search:hover { background: #13b48a; }
+
+        .results-info {
+            font-size: 0.85rem;
+            color: #888;
+            margin-bottom: 16px;
+        }
+
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 16px;
+        }
+
+        /* Card styles (matching board) */
+        .task-card {
+            background: #1a1a2e;
+            border-radius: 8px;
+            padding: 12px;
+            border: 1px solid #2a2a4a;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .task-card:hover { border-color: #16c79a44; transform: translateY(-1px); }
+        .task-card .jira-badge {
+            display: inline-block;
+            background: #4A90D9;
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+        .task-card .task-title {
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 4px;
+            line-height: 1.3;
+        }
+        .task-card .task-desc {
+            font-size: 0.78rem;
+            color: #888;
+            margin-bottom: 6px;
+            line-height: 1.4;
+            max-height: 60px;
+            overflow: hidden;
+        }
+        .task-card .task-meta {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 6px;
+        }
+        .task-card .priority-badge {
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        .priority-most-important { background: #1a1a2e; color: #ff2d2d; border: 1.5px solid #ff2d2d; }
+        .priority-high { background: #e74c3c33; color: #e74c3c; }
+        .priority-medium { background: #f39c1233; color: #f39c12; }
+        .priority-low { background: #2ecc7133; color: #2ecc71; }
+        .task-card .last-comment {
+            font-size: 0.75rem;
+            color: #888;
+            margin-top: 6px;
+            padding: 6px 8px;
+            background: #0f0f23;
+            border-radius: 6px;
+            border-left: 3px solid #4A90D9;
+            line-height: 1.3;
+            max-height: 60px;
+            overflow: hidden;
+        }
+        .column-badge {
+            display: inline-block;
+            background: #2a2a4a;
+            color: #aaa;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            margin-bottom: 6px;
+            margin-left: 4px;
+        }
+
+        .task-screenshot {
+            margin-top: 8px;
+            border-radius: 6px;
+            overflow: hidden;
+            cursor: pointer;
+        }
+        .task-screenshot img {
+            width: 100%;
+            height: auto;
+            max-height: 180px;
+            object-fit: cover;
+            border-radius: 6px;
+            border: 1px solid #2a2a4a;
+            transition: opacity 0.2s;
+        }
+        .task-screenshot img:hover { opacity: 0.8; }
+
+        /* Tickets in card */
+        .tickets-section { margin-top: 8px; }
+        .ticket-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 0;
+            font-size: 0.78rem;
+            color: #ccc;
+        }
+        .ticket-item.done span { text-decoration: line-through; color: #666; }
+        .ticket-item input[type="checkbox"] { accent-color: #16c79a; cursor: pointer; }
+        .ticket-progress {
+            height: 3px;
+            background: #2a2a4a;
+            border-radius: 2px;
+            margin-top: 4px;
+            overflow: hidden;
+        }
+        .ticket-progress-bar {
+            height: 100%;
+            background: #16c79a;
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+
+        /* Highlight matches */
+        mark {
+            background: #16c79a44;
+            color: #16c79a;
+            padding: 0 2px;
+            border-radius: 2px;
+        }
+
+        /* Lightbox */
+        .lightbox-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.95);
+            z-index: 10000;
+            overflow: auto;
+            cursor: pointer;
+            text-align: center;
+        }
+        .lightbox-overlay.active { display: block; }
+        .lightbox-overlay img {
+            display: inline-block;
+            max-width: 95vw;
+            max-height: 95vh;
+            margin: 2vh auto;
+            border-radius: 8px;
+            box-shadow: 0 0 40px rgba(0,0,0,0.5);
+            cursor: zoom-in;
+        }
+        .lightbox-overlay img.zoomed {
+            max-width: none; max-height: none;
+            width: auto; height: auto;
+            cursor: zoom-out;
+        }
+        body.lightbox-open { overflow: hidden !important; }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #555;
+        }
+        .empty-state .icon { font-size: 3rem; margin-bottom: 12px; }
+        .empty-state p { font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔍 Buscar Incidencias</h1>
+        <div class="header-actions">
+            <a href="/" class="btn btn-secondary">← Volver al Board</a>
+        </div>
+    </div>
+
+    <div class="search-container">
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="Buscar por texto, clave ITSM, etiqueta, ticket..." autofocus>
+            <button class="btn-search" onclick="doSearch()">Buscar</button>
+        </div>
+        <div class="results-info" id="resultsInfo"></div>
+        <div class="results-grid" id="resultsGrid">
+            <div class="empty-state">
+                <div class="icon">🔍</div>
+                <p>Escribe un texto para buscar en todas las incidencias y tickets</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="lightbox-overlay" id="lightbox" onclick="closeLightbox()">
+        <img id="lightboxImg" src="" onclick="toggleZoom(event)">
+    </div>
+
+    <script>
+        function escapeHtml(text) {
+            if (!text) return "";
+            const d = document.createElement("div");
+            d.textContent = text;
+            return d.innerHTML;
+        }
+
+        function highlight(text, query) {
+            if (!text || !query) return escapeHtml(text);
+            const escaped = escapeHtml(text);
+            const q = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return escaped.replace(new RegExp(`(${q})`, 'gi'), '<mark>$1</mark>');
+        }
+
+        const searchInput = document.getElementById("searchInput");
+        searchInput.addEventListener("keydown", e => {
+            if (e.key === "Enter") doSearch();
+        });
+
+        let searchTimeout;
+        searchInput.addEventListener("input", () => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                if (searchInput.value.trim().length >= 2) doSearch();
+            }, 400);
+        });
+
+        async function doSearch() {
+            const q = searchInput.value.trim();
+            if (!q) return;
+
+            const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+            const tasks = await resp.json();
+
+            const info = document.getElementById("resultsInfo");
+            const grid = document.getElementById("resultsGrid");
+
+            info.textContent = `${tasks.length} resultado${tasks.length !== 1 ? 's' : ''} para "${q}"`;
+
+            if (tasks.length === 0) {
+                grid.innerHTML = `
+                    <div class="empty-state">
+                        <div class="icon">😕</div>
+                        <p>No se encontraron incidencias con "${escapeHtml(q)}"</p>
+                    </div>`;
+                return;
+            }
+
+            grid.innerHTML = tasks.map(task => renderCard(task, q)).join("");
+        }
+
+        function renderCard(task, query) {
+            const tickets = task.tickets || [];
+            const doneCount = tickets.filter(t => t.done).length;
+            const totalTickets = tickets.length;
+            const progress = totalTickets > 0 ? (doneCount / totalTickets * 100) : 0;
+
+            let priorityClass = "priority-medium";
+            const p = (task.priority || "").toLowerCase();
+            if (p === "most important") priorityClass = "priority-most-important";
+            else if (p.includes("high") || p.includes("alta") || p.includes("critical")) priorityClass = "priority-high";
+            else if (p.includes("low") || p.includes("baja")) priorityClass = "priority-low";
+
+            const jiraBadge = task.jira_key
+                ? `<span class="jira-badge">${escapeHtml(task.jira_key)}</span>
+                   <a href="https://jiraitsm.eulen.com/browse/${escapeHtml(task.jira_key)}" target="_blank"
+                      style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>`
+                : "";
+
+            const columnBadge = task.column_name
+                ? `<span class="column-badge">📋 ${escapeHtml(task.column_name)}</span>`
+                : "";
+
+            const lastComment = task.last_comment
+                ? `<div class="last-comment">${highlight(task.last_comment.substring(0, 150), query)}</div>`
+                : "";
+
+            const jiraUpdatedHtml = task.jira_updated
+                ? `<div style="font-size:0.7rem;color:#666;margin-top:4px;">🕐 ${escapeHtml(task.jira_updated)}</div>`
+                : "";
+
+            const screenshotTs = Date.now();
+            const screenshotHtml = task.screenshot
+                ? `<div class="task-screenshot" onclick="openLightbox('/screenshots/${encodeURIComponent(task.screenshot)}?t=${screenshotTs}')">
+                       <img src="/screenshots/${encodeURIComponent(task.screenshot)}?t=${screenshotTs}" alt="Screenshot" loading="lazy">
+                   </div>`
+                : "";
+
+            const ticketsHtml = tickets.length > 0 ? `
+                <div class="tickets-section">
+                    ${tickets.map(tk => `
+                        <div class="ticket-item ${tk.done ? 'done' : ''}">
+                            <input type="checkbox" ${tk.done ? 'checked' : ''} disabled>
+                            <span>${highlight(tk.title, query)}</span>
+                        </div>
+                    `).join("")}
+                    <div class="ticket-progress"><div class="ticket-progress-bar" style="width:${progress}%"></div></div>
+                </div>` : "";
+
+            return `
+                <div class="task-card">
+                    ${jiraBadge} ${columnBadge}
+                    <div class="task-title">${highlight(task.title, query)}</div>
+                    ${task.description ? `<div class="task-desc">${highlight(task.description.substring(0, 200), query)}</div>` : ""}
+                    <div class="task-meta">
+                        <span class="priority-badge ${priorityClass}">${escapeHtml(task.priority || 'Normal')}</span>
+                        ${task.labels ? `<span style="font-size:0.7rem;color:#888">🏷 ${highlight(task.labels, query)}</span>` : ""}
+                        ${totalTickets > 0 ? `<span style="font-size:0.7rem;color:#888">☑ ${doneCount}/${totalTickets}</span>` : ""}
+                    </div>
+                    ${screenshotHtml}
+                    ${lastComment}
+                    ${jiraUpdatedHtml}
+                    ${ticketsHtml}
+                </div>`;
+        }
+
+        function openLightbox(src) {
+            const img = document.getElementById("lightboxImg");
+            img.src = src;
+            img.classList.remove("zoomed");
+            document.getElementById("lightbox").classList.add("active");
+            document.body.classList.add("lightbox-open");
+        }
+        function closeLightbox() {
+            document.getElementById("lightboxImg").classList.remove("zoomed");
+            document.getElementById("lightbox").classList.remove("active");
+            document.body.classList.remove("lightbox-open");
+        }
+        function toggleZoom(event) {
+            event.stopPropagation();
+            document.getElementById("lightboxImg").classList.toggle("zoomed");
+        }
+    </script>
+</body>
+</html>

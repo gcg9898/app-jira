@@ -31,8 +31,15 @@ SCREENSHOTS_DIR = _DATA_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
 SCREENSHOT_LOG = _DATA_DIR / "screenshot_errors.log"
 
-# Screenshot progress tracking
-_screenshot_progress = {"total": 0, "done": 0, "running": False, "current": ""}
+# Sync & screenshot progress tracking
+_sync_progress = {
+    "phase": "idle",       # idle | fetching | processing | screenshots | done
+    "phase_text": "",
+    "total": 0,
+    "done": 0,
+    "running": False,
+    "current": ""
+}
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURACIÓN JIRA (desde .env)
@@ -155,9 +162,48 @@ def index():
     return render_template("board.html")
 
 
+@app.route("/search")
+def search_page():
+    return render_template("search.html")
+
+
+@app.route("/api/search")
+def api_search():
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify([])
+    conn = get_db()
+    pattern = f"%{q}%"
+    tasks = conn.execute("""
+        SELECT t.*, c.name as column_name
+          FROM tasks t
+          JOIN columns c ON t.column_id = c.id
+         WHERE t.title LIKE ? OR t.description LIKE ?
+            OR t.jira_key LIKE ? OR t.labels LIKE ?
+            OR t.last_comment LIKE ? OR t.jira_status LIKE ?
+            OR t.id IN (
+                SELECT tk.task_id FROM tickets tk WHERE tk.title LIKE ?
+            )
+         ORDER BY t.updated_at DESC
+    """, (pattern, pattern, pattern, pattern, pattern, pattern, pattern)).fetchall()
+    result = []
+    for t in tasks:
+        td = dict(t)
+        tickets = conn.execute(
+            "SELECT * FROM tickets WHERE task_id = ? ORDER BY position", (t["id"],)
+        ).fetchall()
+        override = td.get("priority_override", "") or ""
+        if override:
+            td["priority"] = override
+        td["tickets"] = [dict(tk) for tk in tickets]
+        result.append(td)
+    conn.close()
+    return jsonify(result)
+
+
 @app.route("/api/screenshot-progress")
 def screenshot_progress():
-    return jsonify(_screenshot_progress)
+    return jsonify(_sync_progress)
 
 
 @app.route("/screenshots/<path:filename>")
@@ -439,7 +485,14 @@ def sync_jira():
     session.verify = False
     session.headers.update({"Content-Type": "application/json"})
 
-    # Obtener todas las incidencias del filtro
+    # Phase 1: Fetching from Jira
+    _sync_progress["phase"] = "fetching"
+    _sync_progress["phase_text"] = "Obteniendo incidencias de Jira..."
+    _sync_progress["running"] = True
+    _sync_progress["total"] = 0
+    _sync_progress["done"] = 0
+    _sync_progress["current"] = ""
+
     all_issues = []
     start_at = 0
     while True:
@@ -480,6 +533,12 @@ def sync_jira():
 
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
     imported = 0
+
+    # Phase 2: Processing issues
+    _sync_progress["phase"] = "processing"
+    _sync_progress["phase_text"] = f"Procesando {len(all_issues)} incidencias..."
+    _sync_progress["total"] = len(all_issues)
+    _sync_progress["done"] = 0
 
     for issue in all_issues:
         key = issue["key"]
@@ -538,6 +597,9 @@ def sync_jira():
             )
             imported += 1
 
+        _sync_progress["done"] += 1
+        _sync_progress["current"] = key
+
     # Move Jira tasks not in filter to "Hecho"
     synced_keys = {issue["key"] for issue in all_issues}
     hecho_id = col_map.get("hecho", columns[3]["id"] if len(columns) > 3 else columns[-1]["id"])
@@ -550,12 +612,13 @@ def sync_jira():
     conn.commit()
     conn.close()
 
-    # Take screenshots asynchronously in background thread
+    # Phase 3: Screenshots
     issue_keys = [issue["key"] for issue in all_issues]
-    _screenshot_progress["total"] = len(issue_keys)
-    _screenshot_progress["done"] = 0
-    _screenshot_progress["running"] = True
-    _screenshot_progress["current"] = ""
+    _sync_progress["phase"] = "screenshots"
+    _sync_progress["phase_text"] = "Capturando screenshots..."
+    _sync_progress["total"] = len(issue_keys)
+    _sync_progress["done"] = 0
+    _sync_progress["current"] = ""
     import threading
     t = threading.Thread(target=_take_screenshots_background, args=(issue_keys,), daemon=True)
     t.start()
@@ -570,7 +633,9 @@ def _take_screenshots_background(issue_keys):
 
     num_workers = min(4, math.ceil(len(issue_keys) / 5))
     if num_workers == 0:
-        _screenshot_progress["running"] = False
+        _sync_progress["phase"] = "done"
+        _sync_progress["phase_text"] = "Completado"
+        _sync_progress["running"] = False
         return
 
     chunks = [issue_keys[i::num_workers] for i in range(num_workers)]
@@ -582,7 +647,9 @@ def _take_screenshots_background(issue_keys):
                 f.result()
             except Exception as e:
                 print(f"  Screenshot worker error: {e}")
-    _screenshot_progress["running"] = False
+    _sync_progress["phase"] = "done"
+    _sync_progress["phase_text"] = "Completado"
+    _sync_progress["running"] = False
 
 
 def _screenshot_worker(keys):
@@ -650,10 +717,10 @@ def _screenshot_worker(keys):
                 driver.save_screenshot(str(screenshot_path))
                 conn.execute("UPDATE tasks SET screenshot=? WHERE jira_key=?", (screenshot_file, key))
                 conn.commit()
-                _screenshot_progress["done"] += 1
-                _screenshot_progress["current"] = key
+                _sync_progress["done"] += 1
+                _sync_progress["current"] = key
             except Exception as e:
-                _screenshot_progress["done"] += 1
+                _sync_progress["done"] += 1
                 _log_error(f"Screenshot error for {key}: {e}")
         conn.close()
     except Exception as e:

@@ -495,6 +495,7 @@
         <h1>⚡ Jira Board</h1>
         <div class="header-actions">
             <button class="btn btn-sync" id="syncBtn" onclick="syncJira()">🔄 Sync Jira</button>
+            <a href="/search" class="btn btn-secondary" style="text-decoration:none;">🔍 Buscar</a>
             <div class="sync-progress" id="syncProgress">
                 <div class="sync-progress-bar"><div class="sync-progress-fill" id="syncProgressFill"></div></div>
                 <span class="sync-progress-text" id="syncProgressText">0/0</span>
@@ -936,49 +937,56 @@
 
             btn.classList.add("loading");
             btn.textContent = "⏳ Sincronizando...";
+            progressEl.classList.add("active");
+            progressFill.style.width = "0%";
+            progressText.textContent = "Conectando con Jira...";
+
+            // Start polling progress immediately
+            const pollInterval = setInterval(async () => {
+                try {
+                    const pr = await fetch("/api/screenshot-progress");
+                    const pg = await pr.json();
+
+                    if (pg.phase === "fetching") {
+                        progressFill.style.width = "5%";
+                        progressText.textContent = "🔍 " + pg.phase_text;
+                    } else if (pg.phase === "processing") {
+                        const pct = pg.total > 0 ? 5 + Math.round((pg.done / pg.total) * 25) : 5;
+                        progressFill.style.width = pct + "%";
+                        progressText.textContent = `⚙️ ${pg.done}/${pg.total}${pg.current ? ' · ' + pg.current : ''}`;
+                    } else if (pg.phase === "screenshots") {
+                        const pct = pg.total > 0 ? 30 + Math.round((pg.done / pg.total) * 70) : 30;
+                        progressFill.style.width = pct + "%";
+                        progressText.textContent = `📸 ${pg.done}/${pg.total}${pg.current ? ' · ' + pg.current : ''}`;
+                    } else if (pg.phase === "done") {
+                        clearInterval(pollInterval);
+                        progressFill.style.width = "100%";
+                        progressText.textContent = `✓ Completado`;
+                        btn.classList.remove("loading");
+                        btn.textContent = "🔄 Sync Jira";
+                        loadBoard();
+                        setTimeout(() => progressEl.classList.remove("active"), 3000);
+                    }
+                } catch (e) { /* ignore poll errors */ }
+            }, 1000);
+
             try {
                 const resp = await fetch("/api/sync-jira", { method: "POST" });
                 const data = await resp.json();
                 if (data.ok) {
                     showToast(`✓ Sincronizado: ${data.total} incidencias (${data.imported} nuevas)`);
                     loadBoard();
-
-                    // Start polling screenshot progress
-                    progressEl.classList.add("active");
-                    progressFill.style.width = "0%";
-                    progressText.textContent = `📸 0/${data.total}`;
-                    btn.textContent = "📸 Capturas...";
-
-                    const pollInterval = setInterval(async () => {
-                        try {
-                            const pr = await fetch("/api/screenshot-progress");
-                            const pg = await pr.json();
-                            const pct = pg.total > 0 ? Math.round((pg.done / pg.total) * 100) : 0;
-                            progressFill.style.width = pct + "%";
-                            progressText.textContent = `📸 ${pg.done}/${pg.total}${pg.current ? ' · ' + pg.current : ''}`;
-
-                            if (!pg.running) {
-                                clearInterval(pollInterval);
-                                progressFill.style.width = "100%";
-                                progressText.textContent = `✓ ${pg.done}/${pg.total} capturas`;
-                                btn.classList.remove("loading");
-                                btn.textContent = "🔄 Sync Jira";
-                                loadBoard();
-                                setTimeout(() => progressEl.classList.remove("active"), 3000);
-                            }
-                        } catch (e) {
-                            clearInterval(pollInterval);
-                            progressEl.classList.remove("active");
-                            btn.classList.remove("loading");
-                            btn.textContent = "🔄 Sync Jira";
-                        }
-                    }, 2000);
+                    // polling continues for screenshots phase...
                 } else {
+                    clearInterval(pollInterval);
+                    progressEl.classList.remove("active");
                     showToast("✖ Error: " + (data.error || "desconocido"));
                     btn.classList.remove("loading");
                     btn.textContent = "🔄 Sync Jira";
                 }
             } catch (e) {
+                clearInterval(pollInterval);
+                progressEl.classList.remove("active");
                 showToast("✖ Error de conexión");
                 btn.classList.remove("loading");
                 btn.textContent = "🔄 Sync Jira";
