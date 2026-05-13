@@ -155,8 +155,9 @@ def get_remote_version():
         return None
 
 
-def get_remote_changelog(local_ver, remote_ver):
-    """Fetch CHANGELOG.txt from GitHub and return entries between local and remote versions."""
+def get_remote_changelog(local_ver, remote_ver, include_current=False):
+    """Fetch CHANGELOG.txt from GitHub and return entries between local and remote versions.
+    If include_current=True, also include the local_ver section (for 'what's in my version')."""
     try:
         url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/CHANGELOG.txt"
         req = Request(url, headers={"User-Agent": "JiraBoard-Updater"})
@@ -175,6 +176,8 @@ def get_remote_changelog(local_ver, remote_ver):
             continue
         ver = match.group(1)
         if ver == local_ver:
+            if include_current:
+                result_lines.append(section.strip())
             break
         result_lines.append(section.strip())
 
@@ -773,6 +776,8 @@ class LauncherApp:
         changelog = None
         if remote_ver and (local_ver is None or local_ver != remote_ver):
             changelog = get_remote_changelog(local_ver, remote_ver)
+        elif remote_ver and local_ver == remote_ver:
+            changelog = get_remote_changelog(local_ver, remote_ver, include_current=True)
         self.root.after(0, self._handle_update_result, local_ver, remote_ver, changelog)
 
     def _handle_update_result(self, local_ver, remote_ver, changelog=None):
@@ -806,11 +811,8 @@ class LauncherApp:
             self.update_status_label.config(
                 text=f"Ya tienes la última versión ({local_ver})",
                 fg="#16c79a")
-            if messagebox.askyesno("Reinstalar versión actual",
-                                   f"Ya tienes la última versión ({local_ver}).\n\n"
-                                   "¿Quieres descargarla de nuevo e instalarla?\n"
-                                   "Esto puede solucionar errores de ejecución."):
-                self._start_download()
+            if changelog:
+                self._show_changelog(changelog, local_ver, is_current=True)
 
     def _show_changelog_and_ask(self, changelog, remote_ver):
         """Show changelog in a dialog and ask whether to update. Returns True if user wants to update."""
@@ -865,16 +867,18 @@ class LauncherApp:
         self.root.wait_window(win)
         return result["update"]
 
-    def _show_changelog(self, changelog, remote_ver):
-        """Show changelog in a read-only window (for non-frozen mode)."""
+    def _show_changelog(self, changelog, ver, is_current=False):
+        """Show changelog in a read-only window."""
+        title = f"Tu versión - v{ver}" if is_current else f"Novedades - v{ver}"
+        header = f"\u2705 Novedades en tu versión (v{ver})" if is_current else f"\U0001F4E2 Novedades en v{ver}"
         win = tk.Toplevel(self.root)
-        win.title(f"Novedades - v{remote_ver}")
+        win.title(title)
         win.configure(bg="#1a1a2e")
         win.geometry("500x400")
         win.resizable(True, True)
         win.transient(self.root)
 
-        tk.Label(win, text=f"\U0001F4E2 Novedades en v{remote_ver}", bg="#1a1a2e", fg="#16c79a",
+        tk.Label(win, text=header, bg="#1a1a2e", fg="#16c79a",
                  font=("Segoe UI", 14, "bold")).pack(pady=(12, 8))
 
         text_frame = tk.Frame(win, bg="#0f0f23")
