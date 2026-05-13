@@ -183,12 +183,13 @@ class TaskPopup:
         self.window.title("Nueva Tarea - Jira Board")
         self.window.configure(bg="#1a1a2e")
         self.window.attributes("-topmost", True)
-        self.window.resizable(False, False)
+        self.window.resizable(True, True)
 
-        w, h = 440, 570
+        w, h = 480, 680
         x = (self.window.winfo_screenwidth() - w) // 2
         y = (self.window.winfo_screenheight() - h) // 2
         self.window.geometry(f"{w}x{h}+{x}+{y}")
+        self.window.minsize(440, 550)
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -206,8 +207,30 @@ class TaskPopup:
         self.window.option_add("*TCombobox*Listbox.selectBackground", "#16c79a")
         self.window.option_add("*TCombobox*Listbox.selectForeground", "#0f0f23")
 
-        frame = tk.Frame(self.window, bg="#1a1a2e", padx=20, pady=12)
-        frame.pack(fill="both", expand=True)
+        # Scrollable container
+        container = tk.Frame(self.window, bg="#1a1a2e")
+        container.pack(fill="both", expand=True)
+        canvas = tk.Canvas(container, bg="#1a1a2e", highlightthickness=0)
+        scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        frame = tk.Frame(canvas, bg="#1a1a2e", padx=20, pady=12)
+        frame_window = canvas.create_window((0, 0), window=frame, anchor="nw")
+
+        def _on_frame_configure(e):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        frame.bind("<Configure>", _on_frame_configure)
+
+        def _on_canvas_configure(e):
+            canvas.itemconfig(frame_window, width=e.width)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        # Mouse wheel scroll
+        def _on_mousewheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         tk.Label(frame, text="Nueva Tarea", bg="#1a1a2e", fg="#16c79a",
                  font=("Segoe UI", 13, "bold")).pack(anchor="w", pady=(0, 10))
@@ -346,14 +369,9 @@ class TaskPopup:
         try:
             from PIL import ImageTk
             img = Image.open(str(filepath))
-            # Resize to fit max 400x120 keeping aspect ratio
             img.thumbnail((400, 120), Image.LANCZOS)
             self._preview_img = ImageTk.PhotoImage(img)
             self.preview_label.config(image=self._preview_img)
-            # Expand window height to fit preview
-            w = self.window.winfo_width()
-            h = self.window.winfo_height() + 130
-            self.window.geometry(f"{w}x{h}")
         except Exception:
             pass
 
