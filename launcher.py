@@ -689,7 +689,7 @@ class LauncherApp:
         self.update_status()
 
         # Check for updates on startup
-        self.root.after(2000, self.check_for_updates)
+        self.root.after(2000, lambda: self.check_for_updates(auto_check=True))
 
         self.root.protocol("WM_DELETE_WINDOW", self.minimize)
         self.root.mainloop()
@@ -779,13 +779,13 @@ class LauncherApp:
         save_env(env_data)
         self.restart_flask()
 
-    def check_for_updates(self):
+    def check_for_updates(self, auto_check=False):
         """Check GitHub for a newer version and offer to update."""
         self.update_btn.config(state="disabled", text="Comprobando...")
         self.update_status_label.config(text="Conectando con GitHub...", fg="#888")
-        threading.Thread(target=self._check_update_worker, daemon=True).start()
+        threading.Thread(target=self._check_update_worker, args=(auto_check,), daemon=True).start()
 
-    def _check_update_worker(self):
+    def _check_update_worker(self, auto_check=False):
         try:
             local_ver = get_local_version()
             remote_ver = get_remote_version()
@@ -794,17 +794,17 @@ class LauncherApp:
             local_ver = get_local_version()
             remote_ver = None
             changelog = None
-        self.root.after(0, self._handle_update_result, local_ver, remote_ver, changelog)
+        self.root.after(0, self._handle_update_result, local_ver, remote_ver, changelog, auto_check)
 
-    def _handle_update_result(self, local_ver, remote_ver, changelog=None):
+    def _handle_update_result(self, local_ver, remote_ver, changelog=None, auto_check=False):
         # Always re-enable the button first, no matter what happens below
         self.update_btn.config(state="normal", text="\U0001F504 Comprobar actualizaciones")
         try:
-            self._handle_update_result_inner(local_ver, remote_ver, changelog)
+            self._handle_update_result_inner(local_ver, remote_ver, changelog, auto_check)
         except Exception:
             self.update_status_label.config(text="Error al comprobar actualizaciones.", fg="#e74c3c")
 
-    def _handle_update_result_inner(self, local_ver, remote_ver, changelog=None):
+    def _handle_update_result_inner(self, local_ver, remote_ver, changelog=None, auto_check=False):
 
         if remote_ver is None:
             self.update_status_label.config(
@@ -834,9 +834,11 @@ class LauncherApp:
             self.update_status_label.config(
                 text=f"Ya tienes la última versión ({local_ver})",
                 fg="#16c79a")
-            should_reinstall = self._show_changelog_and_ask(changelog, local_ver, is_current=True)
-            if should_reinstall:
-                self._start_download()
+            # On startup auto-check, don't show dialog if already up to date
+            if not auto_check:
+                should_reinstall = self._show_changelog_and_ask(changelog, local_ver, is_current=True)
+                if should_reinstall:
+                    self._start_download()
 
     def _show_changelog_and_ask(self, changelog, remote_ver, is_current=False):
         """Show changelog in a dialog and ask whether to update. Returns True if user wants to update."""
