@@ -846,7 +846,14 @@ class LauncherApp:
 
         # Header row with title and buttons side by side
         header_frame = tk.Frame(win, bg="#1a1a2e")
-        header_frame.pack(fill="x", padx=16, pady=(12, 8))
+        header_frame.pack(fill="x", padx=16, pady=(12, 4))
+
+        tk.Label(header_frame, text=header, bg="#1a1a2e", fg="#16c79a",
+                 font=("Segoe UI", 14, "bold")).pack(side="left")
+
+        if is_current:
+            tk.Label(win, text="✅ Ya tienes la última versión instalada", bg="#1a1a2e", fg="#16c79a",
+                     font=("Segoe UI", 9)).pack(anchor="w", padx=16, pady=(0, 6))
 
         tk.Label(header_frame, text=header, bg="#1a1a2e", fg="#16c79a",
                  font=("Segoe UI", 14, "bold")).pack(side="left")
