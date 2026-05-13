@@ -844,11 +844,31 @@ class LauncherApp:
         win.transient(self.root)
         win.grab_set()
 
-        tk.Label(win, text=header, bg="#1a1a2e", fg="#16c79a",
-                 font=("Segoe UI", 14, "bold")).pack(pady=(12, 8))
+        # Header row with title and buttons side by side
+        header_frame = tk.Frame(win, bg="#1a1a2e")
+        header_frame.pack(fill="x", padx=16, pady=(12, 8))
+
+        tk.Label(header_frame, text=header, bg="#1a1a2e", fg="#16c79a",
+                 font=("Segoe UI", 14, "bold")).pack(side="left")
+
+        result = {"update": False}
+
+        def do_update():
+            result["update"] = True
+            win.destroy()
+
+        def do_cancel():
+            win.destroy()
+
+        tk.Button(header_frame, text="Ahora no", bg="#2a2a4a", fg="#e0e0e0",
+                  font=("Segoe UI", 9), relief="flat", padx=10, pady=4,
+                  cursor="hand2", command=do_cancel).pack(side="right", padx=(4, 0))
+        tk.Button(header_frame, text=update_btn_text, bg="#16c79a", fg="#0f0f23",
+                  font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=4,
+                  cursor="hand2", command=do_update).pack(side="right")
 
         text_frame = tk.Frame(win, bg="#0f0f23")
-        text_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        text_frame.pack(fill="both", expand=True, padx=16, pady=(0, 12))
 
         scrollbar = tk.Scrollbar(text_frame)
         scrollbar.pack(side="right", fill="y")
@@ -864,25 +884,6 @@ class LauncherApp:
         else:
             text_widget.insert("1.0", "No se pudo obtener el detalle de cambios.")
         text_widget.config(state="disabled")
-
-        result = {"update": False}
-
-        btn_frame = tk.Frame(win, bg="#1a1a2e")
-        btn_frame.pack(fill="x", padx=16, pady=(0, 12))
-
-        def do_update():
-            result["update"] = True
-            win.destroy()
-
-        def do_cancel():
-            win.destroy()
-
-        tk.Button(btn_frame, text=update_btn_text, bg="#16c79a", fg="#0f0f23",
-                  font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=6,
-                  cursor="hand2", command=do_update).pack(side="left", padx=(0, 8))
-        tk.Button(btn_frame, text="Ahora no", bg="#2a2a4a", fg="#e0e0e0",
-                  font=("Segoe UI", 10), relief="flat", padx=14, pady=6,
-                  cursor="hand2", command=do_cancel).pack(side="left")
 
         self.root.wait_window(win)
         return result["update"]
