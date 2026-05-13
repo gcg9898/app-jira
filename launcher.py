@@ -867,9 +867,12 @@ class LauncherApp:
                   font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=4,
                   cursor="hand2", command=do_update).pack(side="right")
 
-        if is_current:
-            tk.Label(win, text="✅ Ya tienes la última versión instalada", bg="#1a1a2e", fg="#16c79a",
-                     font=("Segoe UI", 9)).pack(anchor="w", padx=16, pady=(0, 4))
+        sub_frame = tk.Frame(win, bg="#1a1a2e")
+        sub_frame.pack(fill="x", padx=16, pady=(0, 4))
+        sub_text = "✅ Ya tienes la última versión instalada" if is_current else f"Nueva versión: {remote_ver}"
+        sub_color = "#16c79a" if is_current else "#f5a623"
+        tk.Label(sub_frame, text=sub_text, bg="#1a1a2e", fg=sub_color,
+                 font=("Segoe UI", 9)).pack(side="left")
 
         text_frame = tk.Frame(win, bg="#0f0f23")
         text_frame.pack(fill="both", expand=True, padx=16, pady=(0, 12))
