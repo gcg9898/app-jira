@@ -904,6 +904,7 @@
                 if (colFilters.length > 0) {
                     tasks = tasks.filter(t => {
                         if (!t.jira_key) return true; // Always show manual tasks
+                        if (t.column_id === col.id) return true; // Already in this column — always show
                         if (!t.jira_status) return true;
                         return colFilters.some(f => t.jira_status.toLowerCase() === f.toLowerCase());
                     });
