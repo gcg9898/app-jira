@@ -66,7 +66,7 @@ def create_task_api(column_id, title, description, priority, labels="", link="",
 
 
 class ScreenshotSelector:
-    """Overlay fullscreen para recortar una zona de pantalla."""
+    """Overlay fullscreen para recortar una zona de pantalla (multi-monitor)."""
 
     def __init__(self, callback):
         self.callback = callback
@@ -74,19 +74,30 @@ class ScreenshotSelector:
         self.start_y = 0
         self.rect = None
 
-        # Capture full screen BEFORE showing overlay (physical pixels)
-        self.full_screenshot = ImageGrab.grab()
+        # Capture ALL screens before showing overlay
+        self.full_screenshot = ImageGrab.grab(all_screens=True)
+
+        # Get virtual screen bounds (all monitors combined)
+        import ctypes
+        user32 = ctypes.windll.user32
+        # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN = top-left of virtual desktop
+        self.virt_left = user32.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+        self.virt_top = user32.GetSystemMetrics(77)    # SM_YVIRTUALSCREEN
+        self.virt_width = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+        self.virt_height = user32.GetSystemMetrics(79) # SM_CYVIRTUALSCREEN
 
         self.root = tk.Tk()
-        self.root.attributes("-fullscreen", True)
+        self.root.overrideredirect(True)
+        # Position window to cover ALL monitors
+        self.root.geometry(f"{self.virt_width}x{self.virt_height}+{self.virt_left}+{self.virt_top}")
         self.root.attributes("-alpha", 0.3)
         self.root.attributes("-topmost", True)
         self.root.configure(bg="black")
         self.root.config(cursor="crosshair")
 
-        # Ratio between physical screenshot pixels and logical screen size
-        self.scale_x = self.full_screenshot.width / self.root.winfo_screenwidth()
-        self.scale_y = self.full_screenshot.height / self.root.winfo_screenheight()
+        # Ratio between physical screenshot pixels and logical virtual screen size
+        self.scale_x = self.full_screenshot.width / self.virt_width
+        self.scale_y = self.full_screenshot.height / self.virt_height
 
         self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
