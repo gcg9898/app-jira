@@ -616,6 +616,7 @@
             <button class="btn btn-sync" id="syncBtn" onclick="syncJira()">🔄 Sync Jira</button>
             <a href="/search" class="btn btn-secondary" style="text-decoration:none;">🔍 Buscar</a>
             <button class="btn btn-secondary" id="sortBtn" onclick="toggleSort()">📊 Orden: Prioridad</button>
+            <button class="btn btn-secondary" onclick="applyDefaults()" title="Restaurar columnas y filtros por defecto">⚙ Defaults</button>
             <button class="btn btn-secondary" onclick="addColumn()">+ Columna</button>
         </div>
     </div>
@@ -1079,6 +1080,13 @@
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({ name })
             });
+            loadBoard();
+        }
+
+        async function applyDefaults() {
+            if (!confirm("¿Restaurar columnas y filtros por defecto? (No se borran columnas extra)")) return;
+            await fetch("/api/columns/apply-defaults", { method: "POST" });
+            showToast("Columnas por defecto restauradas");
             loadBoard();
         }
 

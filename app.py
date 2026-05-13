@@ -178,17 +178,10 @@ def migrate_db():
             UNIQUE(column_id, label)
         )
     """)
-    # Assign "Desaparecidas del filtro" to "Hecho" by default if not assigned anywhere
-    existing_disappeared = conn.execute(
-        "SELECT id FROM column_filters WHERE label = 'Desaparecidas del filtro'"
-    ).fetchone()
-    if not existing_disappeared:
-        hecho_col = conn.execute("SELECT id FROM columns WHERE name = 'Hecho'").fetchone()
-        if hecho_col:
-            conn.execute(
-                "INSERT OR IGNORE INTO column_filters (column_id, label) VALUES (?, 'Desaparecidas del filtro')",
-                (hecho_col["id"],)
-            )
+    # Assign default filters to default columns if no filters exist at all
+    any_filters = conn.execute("SELECT COUNT(*) FROM column_filters").fetchone()[0]
+    if any_filters == 0:
+        _apply_default_filters(conn)
     conn.commit()
     conn.close()
 
@@ -379,6 +372,16 @@ def reorder_columns():
     conn = get_db()
     for pos, col_id in enumerate(order):
         conn.execute("UPDATE columns SET position = ? WHERE id = ?", (pos, int(col_id)))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/columns/apply-defaults", methods=["POST"])
+def apply_default_columns():
+    """Apply default columns and filters without deleting user columns."""
+    conn = get_db()
+    _apply_default_filters(conn)
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
