@@ -687,6 +687,10 @@ class LauncherApp:
 
         # Update loop
         self.update_status()
+
+        # Check for updates on startup
+        self.root.after(2000, self.check_for_updates)
+
         self.root.protocol("WM_DELETE_WINDOW", self.minimize)
         self.root.mainloop()
 
