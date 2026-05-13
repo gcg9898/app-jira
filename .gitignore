@@ -3,6 +3,8 @@
 
 # Base de datos local
 board.db
+board.db-shm
+board.db-wal
 
 # Logs
 flask.log

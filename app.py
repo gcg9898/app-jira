@@ -129,10 +129,9 @@ def init_db():
     existing = conn.execute("SELECT COUNT(*) FROM columns").fetchone()[0]
     if existing == 0:
         conn.executemany("INSERT INTO columns (name, position) VALUES (?, ?)", [
-            ("Por Hacer", 0),
-            ("En Progreso", 1),
-            ("En Revisión", 2),
-            ("Hecho", 3),
+            ("En Progreso", 0),
+            ("Esperando Respuesta Usuario", 1),
+            ("Hecho", 2),
         ])
     conn.commit()
     conn.close()
@@ -163,7 +162,7 @@ def migrate_db():
     if "is_default" not in col_cols:
         conn.execute("ALTER TABLE columns ADD COLUMN is_default INTEGER DEFAULT 0")
         # Mark existing default columns
-        default_names = ("Por Hacer", "En Progreso", "En Revisión", "Hecho")
+        default_names = ("En Progreso", "Esperando Respuesta Usuario", "Hecho")
         conn.execute(
             f"UPDATE columns SET is_default = 1 WHERE name IN ({','.join('?' * len(default_names))})",
             default_names
@@ -189,9 +188,8 @@ migrate_db()
 
 # Default column-filter configuration
 DEFAULT_COLUMN_FILTERS = {
-    "Por Hacer": ["Abierto", "Abierta", "Open", "To Do", "Nuevo"],
-    "En Progreso": ["En Progreso", "In Progress", "En Desarrollo", "Respondido"],
-    "En Revisión": ["En Espera de Usuario", "Esperando", "Waiting", "En Espera"],
+    "En Progreso": ["Abierto", "Abierta", "Open", "To Do", "Nuevo", "En Progreso", "In Progress", "En Desarrollo", "Respondido"],
+    "Esperando Respuesta Usuario": ["En Espera de Usuario", "Esperando", "Waiting", "En Espera"],
     "Hecho": ["Cerrado", "Finalizado", "Resuelto", "Closed", "Done", "Desaparecidas del filtro"],
 }
 
