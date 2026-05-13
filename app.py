@@ -156,6 +156,8 @@ def migrate_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN jira_column_id INTEGER DEFAULT NULL")
     if "column_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN column_override INTEGER DEFAULT 0")
+    if "deleted" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN deleted INTEGER DEFAULT 0")
     # Add is_default flag to columns
     col_cols = [row[1] for row in conn.execute("PRAGMA table_info(columns)").fetchall()]
     if "is_default" not in col_cols:
@@ -176,6 +178,17 @@ def migrate_db():
             UNIQUE(column_id, label)
         )
     """)
+    # Assign "Desaparecidas del filtro" to "Hecho" by default if not assigned anywhere
+    existing_disappeared = conn.execute(
+        "SELECT id FROM column_filters WHERE label = 'Desaparecidas del filtro'"
+    ).fetchone()
+    if not existing_disappeared:
+        hecho_col = conn.execute("SELECT id FROM columns WHERE name = 'Hecho'").fetchone()
+        if hecho_col:
+            conn.execute(
+                "INSERT OR IGNORE INTO column_filters (column_id, label) VALUES (?, 'Desaparecidas del filtro')",
+                (hecho_col["id"],)
+            )
     conn.commit()
     conn.close()
 
@@ -206,12 +219,13 @@ def api_search():
         SELECT t.*, c.name as column_name
           FROM tasks t
           JOIN columns c ON t.column_id = c.id
-         WHERE t.title LIKE ? OR t.description LIKE ?
+         WHERE COALESCE(t.deleted, 0) = 0
+           AND (t.title LIKE ? OR t.description LIKE ?
             OR t.jira_key LIKE ? OR t.labels LIKE ?
             OR t.last_comment LIKE ? OR t.jira_status LIKE ?
             OR t.id IN (
                 SELECT tk.task_id FROM tickets tk WHERE tk.title LIKE ?
-            )
+            ))
          ORDER BY t.updated_at DESC
     """, (pattern, pattern, pattern, pattern, pattern, pattern, pattern)).fetchall()
     result = []
@@ -283,7 +297,7 @@ def get_columns():
     result = []
     for col in cols:
         tasks = conn.execute(
-            "SELECT * FROM tasks WHERE column_id = ? ORDER BY position",
+            "SELECT * FROM tasks WHERE column_id = ? AND COALESCE(deleted, 0) = 0 ORDER BY position",
             (col["id"],)
         ).fetchall()
         tasks_list = []
@@ -512,7 +526,11 @@ def restore_column(task_id):
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
 def delete_task(task_id):
     conn = get_db()
-    conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    task = conn.execute("SELECT jira_key FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if task and task["jira_key"]:
+        conn.close()
+        return jsonify({"error": "No se pueden borrar incidencias de Jira"}), 403
+    conn.execute("UPDATE tasks SET deleted = 1 WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -658,24 +676,40 @@ def sync_jira():
             last_comment = f"[{autor}] {body}"
 
         # Ver si ya existe
-        existing = conn.execute("SELECT id, column_override FROM tasks WHERE jira_key = ?", (key,)).fetchone()
+        existing = conn.execute("SELECT id, column_override, priority_override FROM tasks WHERE jira_key = ?", (key,)).fetchone()
         col_id = get_column_id(status)
 
         if existing:
+            # Respect manual priority override
+            task_priority = priority if not existing["priority_override"] else None
             if existing["column_override"]:
                 # User moved it manually — keep their column, only update jira_column_id
-                conn.execute(
-                    """UPDATE tasks SET title=?, description=?, jira_status=?, priority=?,
-                       labels=?, last_comment=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
-                    (summary, desc, status, priority, labels, last_comment, col_id, jira_updated, now, existing["id"])
-                )
+                if task_priority is not None:
+                    conn.execute(
+                        """UPDATE tasks SET title=?, description=?, jira_status=?, priority=?,
+                           labels=?, last_comment=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
+                        (summary, desc, status, task_priority, labels, last_comment, col_id, jira_updated, now, existing["id"])
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE tasks SET title=?, description=?, jira_status=?,
+                           labels=?, last_comment=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
+                        (summary, desc, status, labels, last_comment, col_id, jira_updated, now, existing["id"])
+                    )
             else:
-                # No override — sync column as usual
-                conn.execute(
-                    """UPDATE tasks SET title=?, description=?, jira_status=?, priority=?,
-                       labels=?, last_comment=?, column_id=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
-                    (summary, desc, status, priority, labels, last_comment, col_id, col_id, jira_updated, now, existing["id"])
-                )
+                # No column override — sync column as usual
+                if task_priority is not None:
+                    conn.execute(
+                        """UPDATE tasks SET title=?, description=?, jira_status=?, priority=?,
+                           labels=?, last_comment=?, column_id=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
+                        (summary, desc, status, task_priority, labels, last_comment, col_id, col_id, jira_updated, now, existing["id"])
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE tasks SET title=?, description=?, jira_status=?,
+                           labels=?, last_comment=?, column_id=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
+                        (summary, desc, status, labels, last_comment, col_id, col_id, jira_updated, now, existing["id"])
+                    )
         else:
             max_pos = conn.execute(
                 "SELECT COALESCE(MAX(position), -1) FROM tasks WHERE column_id = ?", (col_id,)
