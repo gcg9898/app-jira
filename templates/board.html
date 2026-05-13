@@ -639,10 +639,13 @@
         /* Hide envs globally */
         body.hide-envs .env-checks,
         body.hide-envs .ticket-env-checks { display: none !important; }
+        .ticket-item { flex-wrap: wrap; }
         .ticket-env-checks {
-            display: inline-flex;
+            display: flex;
             gap: 3px;
-            margin-left: auto;
+            width: 100%;
+            padding-left: 20px;
+            margin-top: 2px;
         }
         .ticket-env-check {
             font-size: 0.6rem;
