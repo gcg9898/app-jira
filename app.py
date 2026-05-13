@@ -624,21 +624,28 @@ def sync_jira():
             break
         start_at += 50
 
-    # Mapeo de estado Jira a columna del board
+    # Mapeo de estado Jira a columna del board usando column_filters
     conn = get_db()
-    columns = conn.execute("SELECT * FROM columns").fetchall()
+    columns = conn.execute("SELECT * FROM columns ORDER BY position").fetchall()
     col_map = {c["name"].lower(): c["id"] for c in columns}
+
+    # Build status->column_id mapping from column_filters table
+    status_to_col = {}
+    for c in columns:
+        filters = conn.execute("SELECT label FROM column_filters WHERE column_id = ?", (c["id"],)).fetchall()
+        for f in filters:
+            status_to_col[f["label"].lower()] = c["id"]
 
     def get_column_id(jira_status):
         s = jira_status.lower()
-        if any(w in s for w in ["abierto", "abierta", "open", "to do", "nuevo"]):
-            return col_map.get("por hacer", columns[0]["id"])
-        if any(w in s for w in ["progreso", "progress", "desarrollo", "respondido"]):
-            return col_map.get("en progreso", columns[1]["id"] if len(columns) > 1 else columns[0]["id"])
-        if any(w in s for w in ["espera", "esperando", "usuario", "waiting"]):
-            return col_map.get("esperando respuesta usuario", columns[2]["id"] if len(columns) > 2 else columns[0]["id"])
-        if any(w in s for w in ["done", "cerrado", "finalizado", "resuelto", "closed"]):
-            return col_map.get("hecho", columns[3]["id"] if len(columns) > 3 else columns[0]["id"])
+        # First try exact match from column_filters
+        if s in status_to_col:
+            return status_to_col[s]
+        # Fallback: try partial match against configured filters
+        for filter_label, col_id in status_to_col.items():
+            if filter_label in s or s in filter_label:
+                return col_id
+        # Last fallback: first column
         return columns[0]["id"]
 
     now = datetime.now().strftime("%d/%m/%Y %H:%M")

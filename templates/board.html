@@ -746,9 +746,17 @@
                 colEl.dataset.colId = col.id;
 
                 let tasks = col.tasks;
-                // Apply global filter
+                // Apply global filter (labels)
                 if (activeFilter) {
                     tasks = tasks.filter(t => t.labels && t.labels.toLowerCase().includes(activeFilter.toLowerCase()));
+                }
+                // Apply per-column jira_status filters
+                const colFilters = col.filter_labels || [];
+                if (colFilters.length > 0) {
+                    tasks = tasks.filter(t => {
+                        if (!t.jira_status) return false;
+                        return colFilters.some(f => t.jira_status.toLowerCase() === f.toLowerCase());
+                    });
                 }
 
                 const taskCount = tasks.length;
@@ -760,7 +768,6 @@
                 colEl.addEventListener("dragend", colDragEnd);
 
                 const deleteBtn = col.is_default ? '' : `<button class="btn-delete-col" onclick="deleteColumn(${col.id})" title="Borrar columna">🗑</button>`;
-                const colFilters = col.filter_labels || [];
                 const hasFilters = colFilters.length > 0;
                 const filterBtn = `<button class="btn-col-filter ${hasFilters ? 'has-filters' : ''}" onclick="openColFilterModal(${col.id})" title="${hasFilters ? 'Estados: ' + colFilters.join(', ') : 'Filtrar por estado Jira'}">📋${hasFilters ? ' ' + colFilters.length : ''}</button>`;
                 colEl.innerHTML = `
