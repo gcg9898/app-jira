@@ -229,12 +229,6 @@ def _apply_default_filters(conn):
         conn.execute("""UPDATE tasks SET column_id = ?, column_override = 0
                         WHERE column_id NOT IN (SELECT id FROM columns)""",
                      (sin_asig["id"],))
-        # Move manual tasks (no jira_key) from default columns to "Sin Asignación"
-        conn.execute("""UPDATE tasks SET column_id = ?
-                        WHERE (jira_key IS NULL OR jira_key = '')
-                          AND column_id != ?
-                          AND column_id IN (SELECT id FROM columns WHERE is_default = 1)""",
-                     (sin_asig["id"], sin_asig["id"]))
 
 
 # ═══════════════════════════════════════════════════════════════
