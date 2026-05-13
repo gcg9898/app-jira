@@ -157,6 +157,14 @@ def migrate_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN column_override INTEGER DEFAULT 0")
     if "deleted" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN deleted INTEGER DEFAULT 0")
+    if "jira_created" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN jira_created TEXT DEFAULT ''")
+    if "jira_due_date" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN jira_due_date TEXT DEFAULT ''")
+    if "jira_start_date" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN jira_start_date TEXT DEFAULT ''")
+    if "jira_oleada" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN jira_oleada TEXT DEFAULT ''")
     # Add is_default flag to columns
     col_cols = [row[1] for row in conn.execute("PRAGMA table_info(columns)").fetchall()]
     if "is_default" not in col_cols:
@@ -338,10 +346,32 @@ def get_columns():
             tasks_list.append(task_dict)
 
         if sort_by == "updated":
-            # Sort by jira_updated descending (most recent first)
             tasks_list.sort(key=lambda t: t.get("jira_updated", "") or "", reverse=True)
+        elif sort_by == "created":
+            tasks_list.sort(key=lambda t: t.get("jira_created", "") or "", reverse=True)
+        elif sort_by == "created_asc":
+            tasks_list.sort(key=lambda t: t.get("jira_created", "") or "")
+        elif sort_by == "updated_asc":
+            tasks_list.sort(key=lambda t: t.get("jira_updated", "") or "")
+        elif sort_by == "due_date":
+            tasks_list.sort(key=lambda t: t.get("jira_due_date", "") or "zzzz")
+        elif sort_by == "due_date_desc":
+            tasks_list.sort(key=lambda t: t.get("jira_due_date", "") or "", reverse=True)
+        elif sort_by == "start_date":
+            tasks_list.sort(key=lambda t: t.get("jira_start_date", "") or "zzzz")
+        elif sort_by == "start_date_desc":
+            tasks_list.sort(key=lambda t: t.get("jira_start_date", "") or "", reverse=True)
+        elif sort_by == "oleada":
+            tasks_list.sort(key=lambda t: t.get("jira_oleada", "") or "zzzz")
+        elif sort_by == "oleada_desc":
+            tasks_list.sort(key=lambda t: t.get("jira_oleada", "") or "", reverse=True)
+        elif sort_by == "priority_asc":
+            PRIO_ORDER = {"most important": -1,
+                          "highest": 0, "blocker": 0, "critical": 0, "cr\u00edtica": 0,
+                          "high": 1, "alta": 1, "medium": 2, "media": 2, "normal": 2,
+                          "low": 3, "baja": 3, "lowest": 4, "muy baja": 4}
+            tasks_list.sort(key=lambda t: PRIO_ORDER.get(t.get("priority", "Normal").lower().strip(), 5), reverse=True)
         else:
-            # Sort by priority
             PRIO_ORDER = {"most important": -1,
                           "highest": 0, "blocker": 0, "critical": 0, "cr\u00edtica": 0,
                           "high": 1, "alta": 1, "medium": 2, "media": 2, "normal": 2,
@@ -703,6 +733,41 @@ def sync_jira():
                 jira_updated = dt.strftime("%d/%m/%Y %H:%M")
             except Exception:
                 jira_updated = jira_updated_raw[:16]
+        # Parse Jira created date
+        jira_created_raw = fields.get("created", "") or ""
+        jira_created = ""
+        if jira_created_raw:
+            try:
+                dt = datetime.fromisoformat(jira_created_raw.replace("Z", "+00:00"))
+                jira_created = dt.strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                jira_created = jira_created_raw[:16]
+        # Parse due date (fecha estimada)
+        jira_due_raw = fields.get("duedate", "") or ""
+        jira_due_date = ""
+        if jira_due_raw:
+            try:
+                dt = datetime.fromisoformat(jira_due_raw)
+                jira_due_date = dt.strftime("%d/%m/%Y")
+            except Exception:
+                jira_due_date = jira_due_raw[:10]
+        # Parse start date (fecha inicio estimada)
+        jira_start_raw = fields.get("customfield_10015", "") or fields.get("customfield_10006", "") or ""
+        jira_start_date = ""
+        if jira_start_raw:
+            try:
+                dt = datetime.fromisoformat(str(jira_start_raw))
+                jira_start_date = dt.strftime("%d/%m/%Y")
+            except Exception:
+                jira_start_date = str(jira_start_raw)[:10]
+        # Parse oleada (custom field)
+        jira_oleada_raw = fields.get("customfield_10100", None) or fields.get("customfield_10101", None) or ""
+        jira_oleada = ""
+        if jira_oleada_raw:
+            if isinstance(jira_oleada_raw, dict):
+                jira_oleada = jira_oleada_raw.get("value", "") or jira_oleada_raw.get("name", "")
+            else:
+                jira_oleada = str(jira_oleada_raw)
         comments = fields.get("comment", {}).get("comments", [])
         last_comment = ""
         if comments:
@@ -723,28 +788,36 @@ def sync_jira():
                 if task_priority is not None:
                     conn.execute(
                         """UPDATE tasks SET title=?, description=?, jira_status=?, priority=?,
-                           labels=?, last_comment=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
-                        (summary, desc, status, task_priority, labels, last_comment, col_id, jira_updated, now, existing["id"])
+                           labels=?, last_comment=?, jira_column_id=?, jira_updated=?, jira_created=?,
+                           jira_due_date=?, jira_start_date=?, jira_oleada=?, updated_at=? WHERE id=?""",
+                        (summary, desc, status, task_priority, labels, last_comment, col_id, jira_updated, jira_created,
+                         jira_due_date, jira_start_date, jira_oleada, now, existing["id"])
                     )
                 else:
                     conn.execute(
                         """UPDATE tasks SET title=?, description=?, jira_status=?,
-                           labels=?, last_comment=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
-                        (summary, desc, status, labels, last_comment, col_id, jira_updated, now, existing["id"])
+                           labels=?, last_comment=?, jira_column_id=?, jira_updated=?, jira_created=?,
+                           jira_due_date=?, jira_start_date=?, jira_oleada=?, updated_at=? WHERE id=?""",
+                        (summary, desc, status, labels, last_comment, col_id, jira_updated, jira_created,
+                         jira_due_date, jira_start_date, jira_oleada, now, existing["id"])
                     )
             else:
                 # No column override — sync column as usual
                 if task_priority is not None:
                     conn.execute(
                         """UPDATE tasks SET title=?, description=?, jira_status=?, priority=?,
-                           labels=?, last_comment=?, column_id=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
-                        (summary, desc, status, task_priority, labels, last_comment, col_id, col_id, jira_updated, now, existing["id"])
+                           labels=?, last_comment=?, column_id=?, jira_column_id=?, jira_updated=?, jira_created=?,
+                           jira_due_date=?, jira_start_date=?, jira_oleada=?, updated_at=? WHERE id=?""",
+                        (summary, desc, status, task_priority, labels, last_comment, col_id, col_id, jira_updated, jira_created,
+                         jira_due_date, jira_start_date, jira_oleada, now, existing["id"])
                     )
                 else:
                     conn.execute(
                         """UPDATE tasks SET title=?, description=?, jira_status=?,
-                           labels=?, last_comment=?, column_id=?, jira_column_id=?, jira_updated=?, updated_at=? WHERE id=?""",
-                        (summary, desc, status, labels, last_comment, col_id, col_id, jira_updated, now, existing["id"])
+                           labels=?, last_comment=?, column_id=?, jira_column_id=?, jira_updated=?, jira_created=?,
+                           jira_due_date=?, jira_start_date=?, jira_oleada=?, updated_at=? WHERE id=?""",
+                        (summary, desc, status, labels, last_comment, col_id, col_id, jira_updated, jira_created,
+                         jira_due_date, jira_start_date, jira_oleada, now, existing["id"])
                     )
         else:
             max_pos = conn.execute(
@@ -752,10 +825,10 @@ def sync_jira():
             ).fetchone()[0]
             conn.execute(
                 """INSERT INTO tasks (column_id, jira_column_id, title, description, jira_key, jira_status,
-                   priority, labels, last_comment, jira_updated, position, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   priority, labels, last_comment, jira_updated, jira_created, jira_due_date, jira_start_date, jira_oleada, position, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (col_id, col_id, summary, desc, key, status, priority, labels, last_comment,
-                 jira_updated, max_pos + 1, now, now)
+                 jira_updated, jira_created, jira_due_date, jira_start_date, jira_oleada, max_pos + 1, now, now)
             )
             imported += 1
 

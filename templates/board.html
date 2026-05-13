@@ -615,7 +615,20 @@
         <div class="header-actions">
             <button class="btn btn-sync" id="syncBtn" onclick="syncJira()">🔄 Sync Jira</button>
             <a href="/search" class="btn btn-secondary" style="text-decoration:none;">🔍 Buscar</a>
-            <button class="btn btn-secondary" id="sortBtn" onclick="toggleSort()">📊 Orden: Prioridad</button>
+            <select class="btn btn-secondary" id="sortSelect" onchange="changeSort(this.value)" style="cursor:pointer;">
+                <option value="priority">📊 Prioridad (mayor a menor)</option>
+                <option value="priority_asc">📊 Prioridad (menor a mayor)</option>
+                <option value="updated">🕓 Últ. actualización (reciente)</option>
+                <option value="updated_asc">🕓 Últ. actualización (antigua)</option>
+                <option value="created">📅 Fecha creación (reciente)</option>
+                <option value="created_asc">📅 Fecha creación (antigua)</option>
+                <option value="due_date">📆 Fecha estimada (próxima)</option>
+                <option value="due_date_desc">📆 Fecha estimada (lejana)</option>
+                <option value="start_date">🚀 Fecha inicio (próxima)</option>
+                <option value="start_date_desc">🚀 Fecha inicio (lejana)</option>
+                <option value="oleada">🌊 Oleada (asc)</option>
+                <option value="oleada_desc">🌊 Oleada (desc)</option>
+            </select>
             <button class="btn btn-secondary" onclick="applyDefaults()" title="Restaurar columnas y filtros por defecto">⚙ Defaults</button>
             <button class="btn btn-secondary" onclick="addColumn()">+ Columna</button>
         </div>
@@ -713,9 +726,8 @@
             window.scrollTo(scrollX, scrollY);
         }
 
-        function toggleSort() {
-            currentSort = currentSort === "priority" ? "updated" : "priority";
-            document.getElementById("sortBtn").textContent = currentSort === "priority" ? "📊 Orden: Prioridad" : "📊 Orden: Actualización";
+        function changeSort(value) {
+            currentSort = value;
             loadBoard();
         }
 
