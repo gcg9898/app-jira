@@ -226,6 +226,31 @@ def migrate_db():
     any_filters = conn.execute("SELECT COUNT(*) FROM column_filters").fetchone()[0]
     if any_filters == 0:
         _apply_default_filters(conn)
+    # Create environments table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS environments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            position INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    # Create task_environments junction table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS task_environments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            env_id INTEGER NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+            FOREIGN KEY (env_id) REFERENCES environments(id) ON DELETE CASCADE,
+            UNIQUE(task_id, env_id)
+        )
+    """)
+    # Insert default environments if none exist
+    any_envs = conn.execute("SELECT COUNT(*) FROM environments").fetchone()[0]
+    if any_envs == 0:
+        conn.executemany("INSERT INTO environments (name, position) VALUES (?, ?)", [
+            ("INT", 0), ("PRE", 1), ("PROD", 2)
+        ])
     conn.commit()
     conn.close()
 
@@ -353,6 +378,11 @@ def get_columns():
             if override:
                 task_dict["priority"] = override
             task_dict["tickets"] = [dict(tk) for tk in tickets]
+            # Get checked environments for this task
+            task_envs = conn.execute(
+                "SELECT env_id FROM task_environments WHERE task_id = ?", (t["id"],)
+            ).fetchall()
+            task_dict["environments"] = [row["env_id"] for row in task_envs]
             tasks_list.append(task_dict)
 
         if sort_by == "updated":
@@ -463,6 +493,63 @@ def apply_default_columns():
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+# ═══════════════════════════════════════════════════════════════
+# ENTORNOS
+# ═══════════════════════════════════════════════════════════════
+@app.route("/api/environments", methods=["GET"])
+def get_environments():
+    conn = get_db()
+    envs = conn.execute("SELECT * FROM environments ORDER BY position").fetchall()
+    conn.close()
+    return jsonify([dict(e) for e in envs])
+
+
+@app.route("/api/environments", methods=["POST"])
+def add_environment():
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Nombre requerido"}), 400
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM environments WHERE name = ?", (name,)).fetchone()
+    if existing:
+        conn.close()
+        return jsonify({"error": "Ya existe un entorno con ese nombre"}), 409
+    max_pos = conn.execute("SELECT COALESCE(MAX(position), -1) FROM environments").fetchone()[0]
+    conn.execute("INSERT INTO environments (name, position) VALUES (?, ?)", (name, max_pos + 1))
+    conn.commit()
+    env_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.close()
+    return jsonify({"id": env_id, "name": name, "position": max_pos + 1})
+
+
+@app.route("/api/environments/<int:env_id>", methods=["DELETE"])
+def delete_environment(env_id):
+    conn = get_db()
+    conn.execute("DELETE FROM task_environments WHERE env_id = ?", (env_id,))
+    conn.execute("DELETE FROM environments WHERE id = ?", (env_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/tasks/<int:task_id>/environments/<int:env_id>", methods=["POST"])
+def toggle_task_environment(task_id, env_id):
+    conn = get_db()
+    existing = conn.execute(
+        "SELECT id FROM task_environments WHERE task_id = ? AND env_id = ?", (task_id, env_id)
+    ).fetchone()
+    if existing:
+        conn.execute("DELETE FROM task_environments WHERE id = ?", (existing["id"],))
+        checked = False
+    else:
+        conn.execute("INSERT INTO task_environments (task_id, env_id) VALUES (?, ?)", (task_id, env_id))
+        checked = True
+    conn.commit()
+    conn.close()
+    return jsonify({"checked": checked})
 
 
 @app.route("/api/columns/<int:col_id>/filters", methods=["GET"])
@@ -612,6 +699,76 @@ def delete_task(task_id):
         conn.close()
         return jsonify({"error": "No se pueden borrar incidencias de Jira"}), 403
     conn.execute("UPDATE tasks SET deleted = 1 WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/deleted")
+def deleted_page():
+    return render_template("deleted.html")
+
+
+@app.route("/api/deleted")
+def api_deleted():
+    q = request.args.get("q", "").strip()
+    sort_by = request.args.get("sort", "updated")
+    conn = get_db()
+    if q:
+        pattern = f"%{q}%"
+        tasks = conn.execute("""
+            SELECT t.*, c.name as column_name FROM tasks t
+            LEFT JOIN columns c ON t.column_id = c.id
+            WHERE t.deleted = 1
+              AND (t.title LIKE ? OR t.description LIKE ? OR t.jira_key LIKE ? OR t.labels LIKE ?)
+            ORDER BY t.updated_at DESC
+        """, (pattern, pattern, pattern, pattern)).fetchall()
+    else:
+        tasks = conn.execute("""
+            SELECT t.*, c.name as column_name FROM tasks t
+            LEFT JOIN columns c ON t.column_id = c.id
+            WHERE t.deleted = 1
+            ORDER BY t.updated_at DESC
+        """).fetchall()
+    conn.close()
+    result = [dict(t) for t in tasks]
+    # Sort
+    if sort_by == "title":
+        result.sort(key=lambda t: (t.get("title") or "").lower())
+    elif sort_by == "title_desc":
+        result.sort(key=lambda t: (t.get("title") or "").lower(), reverse=True)
+    elif sort_by == "created":
+        result.sort(key=lambda t: t.get("created_at") or "", reverse=True)
+    elif sort_by == "created_asc":
+        result.sort(key=lambda t: t.get("created_at") or "")
+    # default: updated desc (already sorted by query)
+    return jsonify(result)
+
+
+@app.route("/api/tasks/<int:task_id>/restore", methods=["POST"])
+def restore_task(task_id):
+    data = request.json or {}
+    column_id = data.get("column_id")
+    conn = get_db()
+    task = conn.execute("SELECT id FROM tasks WHERE id = ? AND deleted = 1", (task_id,)).fetchone()
+    if not task:
+        conn.close()
+        return jsonify({"error": "Tarea no encontrada o no está borrada"}), 404
+    if column_id:
+        col = conn.execute("SELECT id FROM columns WHERE id = ?", (column_id,)).fetchone()
+        if not col:
+            conn.close()
+            return jsonify({"error": "Columna no existe"}), 404
+        conn.execute("UPDATE tasks SET deleted = 0, column_id = ?, column_override = 1 WHERE id = ?",
+                     (column_id, task_id))
+    else:
+        # Restore to Sin Asignación
+        sin_asig = conn.execute("SELECT id FROM columns WHERE name = 'Sin Asignación'").fetchone()
+        if sin_asig:
+            conn.execute("UPDATE tasks SET deleted = 0, column_id = ? WHERE id = ?",
+                         (sin_asig["id"], task_id))
+        else:
+            conn.execute("UPDATE tasks SET deleted = 0 WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})

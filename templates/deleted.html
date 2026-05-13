@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Papelera - Jira Board</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f23;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+
+        .header {
+            background: #1a1a2e;
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid #2a2a4a;
+        }
+        .header h1 { font-size: 1.3rem; color: #16c79a; font-weight: 700; }
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+        .btn {
+            padding: 6px 14px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-secondary { background: #2a2a4a; color: #e0e0e0; text-decoration: none; }
+        .btn-secondary:hover { background: #3a3a5a; }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .toolbar input {
+            flex: 1;
+            min-width: 200px;
+            padding: 10px 14px;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-size: 0.9rem;
+            outline: none;
+        }
+        .toolbar input:focus { border-color: #16c79a; }
+        .toolbar input::placeholder { color: #555; }
+        .toolbar select {
+            padding: 10px 14px;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            font-size: 0.85rem;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .results-info {
+            font-size: 0.85rem;
+            color: #888;
+            margin-bottom: 16px;
+        }
+
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 16px;
+        }
+
+        .task-card {
+            background: #1a1a2e;
+            border-radius: 8px;
+            padding: 12px;
+            border: 1px solid #2a2a4a;
+            transition: all 0.2s;
+            position: relative;
+        }
+        .task-card:hover { border-color: #16c79a44; transform: translateY(-1px); }
+        .task-card .jira-badge {
+            display: inline-block;
+            background: #4A90D9;
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+        .task-card .task-title {
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 4px;
+            line-height: 1.3;
+        }
+        .task-card .task-desc {
+            font-size: 0.78rem;
+            color: #888;
+            margin-bottom: 6px;
+            line-height: 1.4;
+            max-height: 60px;
+            overflow: hidden;
+        }
+        .task-card .task-meta {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 6px;
+        }
+        .task-card .priority-badge {
+            font-size: 0.7rem;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        .priority-most-important { background: #1a1a2e; color: #ff2d2d; border: 1.5px solid #ff2d2d; }
+        .priority-high { background: #e74c3c33; color: #e74c3c; }
+        .priority-medium { background: #f39c1233; color: #f39c12; }
+        .priority-low { background: #2ecc7133; color: #2ecc71; }
+
+        .restore-section {
+            margin-top: 10px;
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .restore-section select {
+            flex: 1;
+            padding: 6px 10px;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            background: #0f0f23;
+            color: #e0e0e0;
+            font-size: 0.78rem;
+            outline: none;
+        }
+        .btn-restore {
+            padding: 6px 12px;
+            background: #16c79a;
+            color: #0f0f23;
+            border: none;
+            border-radius: 6px;
+            font-weight: 700;
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
+        .btn-restore:hover { background: #13b48a; }
+
+        .column-badge {
+            display: inline-block;
+            background: #2a2a4a;
+            color: #aaa;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            margin-bottom: 6px;
+            margin-left: 4px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #555;
+            grid-column: 1 / -1;
+        }
+        .empty-state .icon { font-size: 3rem; margin-bottom: 12px; }
+        .empty-state p { font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🗑️ Papelera</h1>
+        <div class="header-actions">
+            <a href="/" class="btn btn-secondary">← Volver al Board</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="toolbar">
+            <input type="text" id="searchInput" placeholder="Buscar incidencias borradas..." autofocus>
+            <select id="sortSelect" onchange="loadDeleted()">
+                <option value="updated">🕓 Últ. actualización</option>
+                <option value="created">📅 Fecha creación (reciente)</option>
+                <option value="created_asc">📅 Fecha creación (antigua)</option>
+                <option value="title">🔤 Título (A-Z)</option>
+                <option value="title_desc">🔤 Título (Z-A)</option>
+            </select>
+        </div>
+        <div class="results-info" id="resultsInfo"></div>
+        <div class="results-grid" id="resultsGrid">
+            <div class="empty-state">
+                <div class="icon">🗑️</div>
+                <p>Cargando incidencias borradas...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let columns = [];
+
+        function escapeHtml(text) {
+            if (!text) return "";
+            const d = document.createElement("div");
+            d.textContent = text;
+            return d.innerHTML;
+        }
+
+        async function loadColumns() {
+            const resp = await fetch("/api/columns");
+            const data = await resp.json();
+            columns = data;
+        }
+
+        const searchInput = document.getElementById("searchInput");
+        let searchTimeout;
+        searchInput.addEventListener("input", () => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(loadDeleted, 400);
+        });
+        searchInput.addEventListener("keydown", e => {
+            if (e.key === "Enter") loadDeleted();
+        });
+
+        async function loadDeleted() {
+            const q = searchInput.value.trim();
+            const sort = document.getElementById("sortSelect").value;
+            let url = `/api/deleted?sort=${sort}`;
+            if (q) url += `&q=${encodeURIComponent(q)}`;
+
+            const resp = await fetch(url);
+            const tasks = await resp.json();
+
+            const info = document.getElementById("resultsInfo");
+            const grid = document.getElementById("resultsGrid");
+
+            info.textContent = `${tasks.length} incidencia${tasks.length !== 1 ? 's' : ''} en papelera`;
+
+            if (tasks.length === 0) {
+                grid.innerHTML = `
+                    <div class="empty-state">
+                        <div class="icon">✨</div>
+                        <p>La papelera está vacía</p>
+                    </div>`;
+                return;
+            }
+
+            grid.innerHTML = tasks.map(task => renderCard(task)).join("");
+        }
+
+        function renderCard(task) {
+            let priorityClass = "priority-medium";
+            const p = (task.priority || "").toLowerCase();
+            if (p === "most important") priorityClass = "priority-most-important";
+            else if (p.includes("high") || p.includes("alta") || p.includes("critical")) priorityClass = "priority-high";
+            else if (p.includes("low") || p.includes("baja")) priorityClass = "priority-low";
+
+            const jiraBadge = task.jira_key
+                ? `<span class="jira-badge">${escapeHtml(task.jira_key)}</span>`
+                : "";
+
+            const columnOptions = columns.map(c =>
+                `<option value="${c.id}">${escapeHtml(c.name)}</option>`
+            ).join("");
+
+            return `
+                <div class="task-card" id="card-${task.id}">
+                    ${jiraBadge}
+                    <div class="task-title">${escapeHtml(task.title)}</div>
+                    ${task.description ? `<div class="task-desc">${escapeHtml(task.description.substring(0, 200))}</div>` : ""}
+                    <div class="task-meta">
+                        <span class="priority-badge ${priorityClass}">${escapeHtml(task.priority || 'Normal')}</span>
+                        ${task.labels ? `<span style="font-size:0.7rem;color:#888">🏷 ${escapeHtml(task.labels)}</span>` : ""}
+                    </div>
+                    <div class="restore-section">
+                        <select id="restore-col-${task.id}">
+                            <option value="">Sin Asignación</option>
+                            ${columnOptions}
+                        </select>
+                        <button class="btn-restore" onclick="restoreTask(${task.id})">♻️ Restaurar</button>
+                    </div>
+                </div>`;
+        }
+
+        async function restoreTask(taskId) {
+            const select = document.getElementById(`restore-col-${taskId}`);
+            const columnId = select.value || null;
+            const body = columnId ? { column_id: parseInt(columnId) } : {};
+
+            const resp = await fetch(`/api/tasks/${taskId}/restore`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            });
+
+            if (resp.ok) {
+                document.getElementById(`card-${taskId}`).remove();
+                const info = document.getElementById("resultsInfo");
+                const remaining = document.querySelectorAll(".task-card").length;
+                info.textContent = `${remaining} incidencia${remaining !== 1 ? 's' : ''} en papelera`;
+                if (remaining === 0) {
+                    document.getElementById("resultsGrid").innerHTML = `
+                        <div class="empty-state">
+                            <div class="icon">✨</div>
+                            <p>La papelera está vacía</p>
+                        </div>`;
+                }
+            } else {
+                const err = await resp.json();
+                alert(err.error || "Error al restaurar");
+            }
+        }
+
+        // Init
+        (async () => {
+            await loadColumns();
+            loadDeleted();
+        })();
+    </script>
+</body>
+</html>
