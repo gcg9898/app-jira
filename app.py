@@ -384,6 +384,19 @@ def set_column_filters(col_id):
     data = request.json
     labels = data.get("labels", [])
     conn = get_db()
+    # Check for duplicates: no status can be in more than one column
+    for label in labels:
+        label_stripped = label.strip()
+        if not label_stripped:
+            continue
+        existing = conn.execute(
+            "SELECT column_id FROM column_filters WHERE label = ? AND column_id != ?",
+            (label_stripped, col_id)
+        ).fetchone()
+        if existing:
+            col_name = conn.execute("SELECT name FROM columns WHERE id = ?", (existing["column_id"],)).fetchone()
+            conn.close()
+            return jsonify({"error": f"El estado '{label_stripped}' ya está asignado a la columna '{col_name['name']}'"}), 409
     conn.execute("DELETE FROM column_filters WHERE column_id = ?", (col_id,))
     for label in labels:
         label = label.strip()
@@ -679,14 +692,23 @@ def sync_jira():
         _sync_progress["done"] += 1
         _sync_progress["current"] = key
 
-    # Move Jira tasks not in filter to "Hecho"
+    # Move Jira tasks not in filter to the column with "Desaparecidas del filtro"
     synced_keys = {issue["key"] for issue in all_issues}
-    hecho_id = col_map.get("hecho", columns[3]["id"] if len(columns) > 3 else columns[-1]["id"])
+    # Find the column that has the special filter
+    disappeared_col_id = None
+    for c in columns:
+        filters = conn.execute("SELECT label FROM column_filters WHERE column_id = ?", (c["id"],)).fetchall()
+        if any(f["label"] == "Desaparecidas del filtro" for f in filters):
+            disappeared_col_id = c["id"]
+            break
+    # Fallback to "Hecho" column if no column has the special filter
+    if disappeared_col_id is None:
+        disappeared_col_id = col_map.get("hecho", columns[3]["id"] if len(columns) > 3 else columns[-1]["id"])
     all_jira_tasks = conn.execute("SELECT id, jira_key, column_id FROM tasks WHERE jira_key != ''").fetchall()
     for task in all_jira_tasks:
-        if task["jira_key"] not in synced_keys and task["column_id"] != hecho_id:
-            conn.execute("UPDATE tasks SET column_id=?, jira_column_id=?, column_override=0, jira_status='Finalizado', updated_at=? WHERE id=?",
-                         (hecho_id, hecho_id, now, task["id"]))
+        if task["jira_key"] not in synced_keys and task["column_id"] != disappeared_col_id:
+            conn.execute("UPDATE tasks SET column_id=?, jira_column_id=?, column_override=0, jira_status='Desaparecida del filtro', updated_at=? WHERE id=?",
+                         (disappeared_col_id, disappeared_col_id, now, task["id"]))
 
     conn.commit()
     conn.close()

@@ -1098,6 +1098,7 @@
         // ═══════════════════════════════════════════
         let colFilterColumnId = null;
         let colFilterSelected = new Set();
+        const SPECIAL_STATUS = "Desaparecidas del filtro";
 
         function getAllJiraStatuses() {
             const statuses = new Set();
@@ -1105,6 +1106,16 @@
                 if (t.jira_status) statuses.add(t.jira_status);
             }));
             return [...statuses].sort();
+        }
+
+        function getStatusesUsedByOtherColumns(currentColId) {
+            const used = new Set();
+            boardData.forEach(col => {
+                if (col.id !== currentColId && col.filter_labels) {
+                    col.filter_labels.forEach(l => used.add(l));
+                }
+            });
+            return used;
         }
 
         function openColFilterModal(colId) {
@@ -1124,15 +1135,21 @@
         function renderColFilterLabels() {
             const container = document.getElementById("colFilterLabels");
             const allStatuses = getAllJiraStatuses();
-            // Merge: all statuses from tasks + any custom ones already selected
-            const merged = new Set([...allStatuses, ...colFilterSelected]);
+            // Merge: all statuses + special + custom already selected
+            const merged = new Set([SPECIAL_STATUS, ...allStatuses, ...colFilterSelected]);
             const sorted = [...merged].sort();
+            const usedByOthers = getStatusesUsedByOtherColumns(colFilterColumnId);
 
             container.innerHTML = sorted.map(status => {
                 const checked = colFilterSelected.has(status) ? "checked" : "";
-                return `<label class="col-filter-label-item">
-                    <input type="checkbox" ${checked} onchange="toggleColFilterLabel('${escapeHtml(status)}', this.checked)">
-                    <span>${escapeHtml(status)}</span>
+                const isSpecial = status === SPECIAL_STATUS;
+                const usedElsewhere = usedByOthers.has(status) && !colFilterSelected.has(status);
+                const disabled = usedElsewhere ? "disabled" : "";
+                const extraStyle = usedElsewhere ? 'style="opacity:0.4;"' : '';
+                const specialBadge = isSpecial ? '<span style="font-size:0.65rem;background:#e74c3c33;color:#e74c3c;padding:1px 5px;border-radius:3px;margin-left:6px;">especial</span>' : '';
+                return `<label class="col-filter-label-item" ${extraStyle}>
+                    <input type="checkbox" ${checked} ${disabled} onchange="toggleColFilterLabel('${escapeHtml(status)}', this.checked)">
+                    <span>${escapeHtml(status)}${specialBadge}</span>
                 </label>`;
             }).join("");
 
@@ -1166,13 +1183,18 @@
         async function saveColFilters() {
             if (colFilterColumnId === null) return;
             const labels = [...colFilterSelected];
-            await fetch(`/api/columns/${colFilterColumnId}/filters`, {
+            const resp = await fetch(`/api/columns/${colFilterColumnId}/filters`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ labels })
             });
-            closeColFilterModal();
-            loadBoard();
+            if (resp.ok) {
+                closeColFilterModal();
+                loadBoard();
+            } else {
+                const data = await resp.json();
+                showToast("✖ " + (data.error || "Error al guardar filtros"));
+            }
         }
 
         // ═══════════════════════════════════════════
