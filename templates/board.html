@@ -997,7 +997,7 @@
                 <div class="task-card" draggable="true" ondragstart="dragStart(event, ${task.id})" data-task-id="${task.id}">
                     <div class="task-actions">
                         <button onclick="editTask(${task.id})" title="Editar">✎</button>
-                        ${!task.jira_key ? `<button onclick="deleteTask(${task.id})" title="Eliminar">✕</button>` : ""}
+                        <button onclick="deleteTask(${task.id})" title="Eliminar">✕</button>
                     </div>
                     ${jiraBadge} ${linkHtml}
                     <div class="task-title">${escapeHtml(task.title)}</div>
