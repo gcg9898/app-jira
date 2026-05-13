@@ -807,8 +807,8 @@ class LauncherApp:
             self.update_status_label.config(
                 text=f"{tag} {remote_ver} (actualización solo disponible en .exe)",
                 fg="#f5a623" if is_new else "#16c79a")
-            if is_new and changelog:
-                self._show_changelog(changelog, remote_ver)
+            if changelog:
+                self._show_changelog(changelog, remote_ver if is_new else local_ver, is_current=not is_new)
             return
 
         if is_new:
@@ -822,20 +822,24 @@ class LauncherApp:
             self.update_status_label.config(
                 text=f"Ya tienes la última versión ({local_ver})",
                 fg="#16c79a")
-            if changelog:
-                self._show_changelog(changelog, local_ver, is_current=True)
+            should_reinstall = self._show_changelog_and_ask(changelog, local_ver, is_current=True)
+            if should_reinstall:
+                self._start_download()
 
-    def _show_changelog_and_ask(self, changelog, remote_ver):
+    def _show_changelog_and_ask(self, changelog, remote_ver, is_current=False):
         """Show changelog in a dialog and ask whether to update. Returns True if user wants to update."""
+        title = f"Tu versión - v{remote_ver}" if is_current else f"Novedades - v{remote_ver}"
+        header = f"\u2705 Novedades en tu versión (v{remote_ver})" if is_current else f"\U0001F4E2 Novedades en v{remote_ver}"
+        update_btn_text = "\U0001F504 Reinstalar versión" if is_current else "\U0001F4E5 Actualizar ahora"
         win = tk.Toplevel(self.root)
-        win.title(f"Novedades - v{remote_ver}")
+        win.title(title)
         win.configure(bg="#1a1a2e")
         win.geometry("500x400")
         win.resizable(True, True)
         win.transient(self.root)
         win.grab_set()
 
-        tk.Label(win, text=f"\U0001F4E2 Novedades en v{remote_ver}", bg="#1a1a2e", fg="#16c79a",
+        tk.Label(win, text=header, bg="#1a1a2e", fg="#16c79a",
                  font=("Segoe UI", 14, "bold")).pack(pady=(12, 8))
 
         text_frame = tk.Frame(win, bg="#0f0f23")
@@ -868,7 +872,7 @@ class LauncherApp:
         def do_cancel():
             win.destroy()
 
-        tk.Button(btn_frame, text="\U0001F4E5 Actualizar ahora", bg="#16c79a", fg="#0f0f23",
+        tk.Button(btn_frame, text=update_btn_text, bg="#16c79a", fg="#0f0f23",
                   font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=6,
                   cursor="hand2", command=do_update).pack(side="left", padx=(0, 8))
         tk.Button(btn_frame, text="Ahora no", bg="#2a2a4a", fg="#e0e0e0",
