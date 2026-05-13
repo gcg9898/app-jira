@@ -27,6 +27,19 @@ JIRA_BASE_URL=https://tu-instancia.jira.com
 JIRA_FILTER_ID=12345
 ```
 
+### ¿De dónde saco la URL y el filtro?
+
+Abre tu filtro de Jira en el navegador. La URL tendrá esta forma:
+
+```
+https://tu-jira.ejemplo.com/issues/?filter=30004
+         ^^^^^^^^^^^^^^^^^^^^^^              ^^^^^
+         JIRA_BASE_URL                       JIRA_FILTER_ID
+```
+
+- **`JIRA_BASE_URL`** → la parte de la URL hasta antes de `/issues` (ejemplo: `https://tu-jira.ejemplo.com`).
+- **`JIRA_FILTER_ID`** → el número que aparece después de `filter=` (ejemplo: `30004`).
+
 > También puedes rellenar estos campos directamente desde el launcher sin editar el fichero a mano.
 
 ## Arrancar la aplicación
