@@ -156,8 +156,9 @@ def get_remote_version():
 
 
 def get_remote_changelog(local_ver, remote_ver, include_current=False):
-    """Fetch CHANGELOG.txt from GitHub and return entries between local and remote versions.
-    If include_current=True, also include the local_ver section (for 'what's in my version')."""
+    """Fetch CHANGELOG.txt from GitHub and return relevant entries.
+    - If there are entries newer than local_ver → return all of them.
+    - If local_ver is the newest or not found → return the latest entry."""
     try:
         url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/CHANGELOG.txt"
         req = Request(url, headers={"User-Agent": "JiraBoard-Updater"})
@@ -166,30 +167,32 @@ def get_remote_changelog(local_ver, remote_ver, include_current=False):
     except (URLError, HTTPError, OSError):
         return None
 
-    # Parse sections: each starts with [hash]
+    # Parse sections: each starts with [hash], ordered newest first
     import re
     sections = re.split(r'(?=^\[)', content, flags=re.MULTILINE)
-    result_lines = []
-    all_sections = []
-    found_local = False
+    parsed = []
     for section in sections:
         match = re.match(r'\[([a-f0-9]+)\]', section)
-        if not match:
-            continue
-        all_sections.append(section.strip())
-        ver = match.group(1)
+        if match:
+            parsed.append((match.group(1), section.strip()))
+
+    if not parsed:
+        return None
+
+    # Find local version position in changelog
+    local_idx = None
+    for i, (ver, _) in enumerate(parsed):
         if ver == local_ver:
-            found_local = True
-            if include_current:
-                result_lines.append(section.strip())
+            local_idx = i
             break
-        result_lines.append(section.strip())
 
-    # If local version not found in changelog, show the latest entry
-    if not result_lines and all_sections:
-        return all_sections[0]
-
-    return "\n\n".join(result_lines) if result_lines else None
+    if local_idx is not None and local_idx > 0:
+        # There are newer entries than mine → show them all
+        newer = [text for _, text in parsed[:local_idx]]
+        return "\n\n".join(newer)
+    else:
+        # My version is the newest or not found → show latest entry
+        return parsed[0][1]
 
 
 def _get_exe_download_url():
@@ -781,11 +784,7 @@ class LauncherApp:
     def _check_update_worker(self):
         local_ver = get_local_version()
         remote_ver = get_remote_version()
-        changelog = None
-        if remote_ver and (local_ver is None or local_ver != remote_ver):
-            changelog = get_remote_changelog(local_ver, remote_ver)
-        elif remote_ver and local_ver == remote_ver:
-            changelog = get_remote_changelog(local_ver, remote_ver, include_current=True)
+        changelog = get_remote_changelog(local_ver, remote_ver) if remote_ver else None
         self.root.after(0, self._handle_update_result, local_ver, remote_ver, changelog)
 
     def _handle_update_result(self, local_ver, remote_ver, changelog=None):
