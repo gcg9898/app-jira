@@ -786,13 +786,25 @@ class LauncherApp:
         threading.Thread(target=self._check_update_worker, daemon=True).start()
 
     def _check_update_worker(self):
-        local_ver = get_local_version()
-        remote_ver = get_remote_version()
-        changelog = get_remote_changelog(local_ver, remote_ver) if remote_ver else None
+        try:
+            local_ver = get_local_version()
+            remote_ver = get_remote_version()
+            changelog = get_remote_changelog(local_ver, remote_ver) if remote_ver else None
+        except Exception:
+            local_ver = get_local_version()
+            remote_ver = None
+            changelog = None
         self.root.after(0, self._handle_update_result, local_ver, remote_ver, changelog)
 
     def _handle_update_result(self, local_ver, remote_ver, changelog=None):
+        # Always re-enable the button first, no matter what happens below
         self.update_btn.config(state="normal", text="\U0001F504 Comprobar actualizaciones")
+        try:
+            self._handle_update_result_inner(local_ver, remote_ver, changelog)
+        except Exception:
+            self.update_status_label.config(text="Error al comprobar actualizaciones.", fg="#e74c3c")
+
+    def _handle_update_result_inner(self, local_ver, remote_ver, changelog=None):
 
         if remote_ver is None:
             self.update_status_label.config(
