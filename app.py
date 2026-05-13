@@ -199,14 +199,13 @@ DEFAULT_COLUMN_FILTERS = {
     "En Progreso": ["Abierto", "Abierta", "Open", "To Do", "Nuevo", "En Progreso", "In Progress", "En Desarrollo", "Respondido"],
     "Esperando Respuesta Usuario": ["En Espera de Usuario", "Esperando", "Waiting", "En Espera", "En Revisión", "In Review", "Under Review", "Review"],
     "Hecho": ["Cerrado", "Finalizado", "Resuelto", "Closed", "Done", "Desaparecidas del filtro"],
+    "Sin Asignación": [],
 }
 
 
 def _apply_default_filters(conn):
     """Apply default filters to default columns. Creates columns if they don't exist.
-       Removes non-default columns and reassigns their tasks."""
-    # First, create/update default columns
-    default_col_ids = []
+       Does NOT remove user-created columns."""
     for col_name, filters in DEFAULT_COLUMN_FILTERS.items():
         col = conn.execute("SELECT id FROM columns WHERE name = ?", (col_name,)).fetchone()
         if not col:
@@ -217,7 +216,6 @@ def _apply_default_filters(conn):
         else:
             col_id = col["id"]
             conn.execute("UPDATE columns SET is_default = 1 WHERE id = ?", (col_id,))
-        default_col_ids.append(col_id)
         # Clear existing filters for this column and set defaults
         conn.execute("DELETE FROM column_filters WHERE column_id = ?", (col_id,))
         for label in filters:
@@ -225,36 +223,6 @@ def _apply_default_filters(conn):
             conn.execute("DELETE FROM column_filters WHERE label = ? AND column_id != ?", (label, col_id))
             conn.execute("INSERT OR IGNORE INTO column_filters (column_id, label) VALUES (?, ?)",
                          (col_id, label))
-
-    # Build status-to-column mapping from defaults
-    status_to_col = {}
-    for col_name, filters in DEFAULT_COLUMN_FILTERS.items():
-        col = conn.execute("SELECT id FROM columns WHERE name = ?", (col_name,)).fetchone()
-        if col:
-            for label in filters:
-                status_to_col[label.lower()] = col["id"]
-
-    # Get first default column as fallback
-    first_default_col = default_col_ids[0] if default_col_ids else None
-
-    # Remove non-default columns and reassign tasks
-    non_default_cols = conn.execute(
-        "SELECT id FROM columns WHERE id NOT IN ({})".format(",".join("?" * len(default_col_ids))),
-        default_col_ids
-    ).fetchall()
-
-    for nd_col in non_default_cols:
-        nd_id = nd_col["id"]
-        # Move tasks to appropriate default column based on jira_status
-        tasks = conn.execute("SELECT id, jira_status FROM tasks WHERE column_id = ?", (nd_id,)).fetchall()
-        for task in tasks:
-            status = (task["jira_status"] or "").lower().strip()
-            target_col = status_to_col.get(status, first_default_col)
-            conn.execute("UPDATE tasks SET column_id = ?, column_override = 0 WHERE id = ?",
-                         (target_col, task["id"]))
-        # Delete filters and column
-        conn.execute("DELETE FROM column_filters WHERE column_id = ?", (nd_id,))
-        conn.execute("DELETE FROM columns WHERE id = ?", (nd_id,))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -450,6 +418,18 @@ def delete_column(col_id):
     if col and col["is_default"]:
         conn.close()
         return jsonify({"error": "No se pueden borrar columnas por defecto"}), 403
+    # Move tasks to "Sin Asignación" column
+    sin_asig = conn.execute("SELECT id FROM columns WHERE name = 'Sin Asignación'").fetchone()
+    if not sin_asig:
+        max_pos = conn.execute("SELECT COALESCE(MAX(position), -1) FROM columns").fetchone()[0]
+        conn.execute("INSERT INTO columns (name, position, is_default) VALUES ('Sin Asignación', ?, 1)",
+                     (max_pos + 1,))
+        sin_asig_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    else:
+        sin_asig_id = sin_asig["id"]
+    conn.execute("UPDATE tasks SET column_id = ?, column_override = 0 WHERE column_id = ?",
+                 (sin_asig_id, col_id))
+    conn.execute("DELETE FROM column_filters WHERE column_id = ?", (col_id,))
     conn.execute("DELETE FROM columns WHERE id = ?", (col_id,))
     conn.commit()
     conn.close()
