@@ -245,6 +245,17 @@ def migrate_db():
             UNIQUE(task_id, env_id)
         )
     """)
+    # Create ticket_environments junction table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ticket_environments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id INTEGER NOT NULL,
+            env_id INTEGER NOT NULL,
+            FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
+            FOREIGN KEY (env_id) REFERENCES environments(id) ON DELETE CASCADE,
+            UNIQUE(ticket_id, env_id)
+        )
+    """)
     # Insert default environments if none exist
     any_envs = conn.execute("SELECT COUNT(*) FROM environments").fetchone()[0]
     if any_envs == 0:
@@ -377,7 +388,14 @@ def get_columns():
             override = task_dict.get("priority_override", "") or ""
             if override:
                 task_dict["priority"] = override
-            task_dict["tickets"] = [dict(tk) for tk in tickets]
+            task_dict["tickets"] = []
+            for tk in tickets:
+                tk_dict = dict(tk)
+                tk_envs = conn.execute(
+                    "SELECT env_id FROM ticket_environments WHERE ticket_id = ?", (tk["id"],)
+                ).fetchall()
+                tk_dict["environments"] = [row["env_id"] for row in tk_envs]
+                task_dict["tickets"].append(tk_dict)
             # Get checked environments for this task
             task_envs = conn.execute(
                 "SELECT env_id FROM task_environments WHERE task_id = ?", (t["id"],)
@@ -529,6 +547,7 @@ def add_environment():
 def delete_environment(env_id):
     conn = get_db()
     conn.execute("DELETE FROM task_environments WHERE env_id = ?", (env_id,))
+    conn.execute("DELETE FROM ticket_environments WHERE env_id = ?", (env_id,))
     conn.execute("DELETE FROM environments WHERE id = ?", (env_id,))
     conn.commit()
     conn.close()
@@ -547,6 +566,39 @@ def toggle_task_environment(task_id, env_id):
     else:
         conn.execute("INSERT INTO task_environments (task_id, env_id) VALUES (?, ?)", (task_id, env_id))
         checked = True
+    conn.commit()
+    conn.close()
+    return jsonify({"checked": checked})
+
+
+@app.route("/api/tickets/<int:ticket_id>/environments/<int:env_id>", methods=["POST"])
+def toggle_ticket_environment(ticket_id, env_id):
+    conn = get_db()
+    existing = conn.execute(
+        "SELECT id FROM ticket_environments WHERE ticket_id = ? AND env_id = ?", (ticket_id, env_id)
+    ).fetchone()
+    if existing:
+        conn.execute("DELETE FROM ticket_environments WHERE id = ?", (existing["id"],))
+        checked = False
+    else:
+        conn.execute("INSERT INTO ticket_environments (ticket_id, env_id) VALUES (?, ?)", (ticket_id, env_id))
+        checked = True
+    # Auto-update parent task: if ALL tickets have this env checked, check parent too
+    ticket = conn.execute("SELECT task_id FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+    if ticket:
+        task_id = ticket["task_id"]
+        all_tickets = conn.execute("SELECT id FROM tickets WHERE task_id = ?", (task_id,)).fetchall()
+        all_checked = all(
+            conn.execute("SELECT id FROM ticket_environments WHERE ticket_id = ? AND env_id = ?",
+                         (tk["id"], env_id)).fetchone()
+            for tk in all_tickets
+        )
+        if all_checked and all_tickets:
+            conn.execute("INSERT OR IGNORE INTO task_environments (task_id, env_id) VALUES (?, ?)",
+                         (task_id, env_id))
+        else:
+            conn.execute("DELETE FROM task_environments WHERE task_id = ? AND env_id = ?",
+                         (task_id, env_id))
     conn.commit()
     conn.close()
     return jsonify({"checked": checked})

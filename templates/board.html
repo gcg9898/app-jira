@@ -607,6 +607,122 @@
             gap: 10px;
             justify-content: flex-end;
         }
+
+        /* Environments */
+        .env-checks {
+            display: flex;
+            gap: 4px;
+            margin-top: 6px;
+            flex-wrap: wrap;
+        }
+        .env-check {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            font-size: 0.65rem;
+            color: #888;
+            background: #0f0f23;
+            border: 1px solid #2a2a4a;
+            border-radius: 4px;
+            padding: 1px 5px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .env-check.checked {
+            background: #16c79a22;
+            border-color: #16c79a;
+            color: #16c79a;
+        }
+        .env-check input { display: none; }
+        .env-check-icon::before { content: "○"; }
+        .env-check.checked .env-check-icon::before { content: "●"; }
+        /* Hide envs globally */
+        body.hide-envs .env-checks,
+        body.hide-envs .ticket-env-checks { display: none !important; }
+        .ticket-env-checks {
+            display: inline-flex;
+            gap: 3px;
+            margin-left: auto;
+        }
+        .ticket-env-check {
+            font-size: 0.6rem;
+            color: #666;
+            background: #0f0f23;
+            border: 1px solid #222;
+            border-radius: 3px;
+            padding: 0 3px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .ticket-env-check.checked {
+            background: #16c79a22;
+            border-color: #16c79a;
+            color: #16c79a;
+        }
+
+        /* Environments dropdown */
+        .env-manager {
+            position: relative;
+            display: inline-block;
+        }
+        .env-dropdown {
+            display: none;
+            position: absolute;
+            top: 100%;
+            right: 0;
+            background: #1a1a2e;
+            border: 1px solid #2a2a4a;
+            border-radius: 8px;
+            padding: 10px;
+            z-index: 1000;
+            min-width: 200px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        .env-dropdown.show { display: block; }
+        .env-dropdown-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 8px;
+            border-radius: 4px;
+            font-size: 0.82rem;
+            color: #e0e0e0;
+        }
+        .env-dropdown-item:hover { background: #2a2a4a; }
+        .env-dropdown-item button {
+            background: none;
+            border: none;
+            color: #e74c3c;
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+        .env-dropdown-add {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #2a2a4a;
+        }
+        .env-dropdown-add input {
+            flex: 1;
+            padding: 4px 8px;
+            border: 1px solid #2a2a4a;
+            border-radius: 4px;
+            background: #0f0f23;
+            color: #e0e0e0;
+            font-size: 0.8rem;
+            outline: none;
+        }
+        .env-dropdown-add button {
+            padding: 4px 10px;
+            background: #16c79a;
+            color: #0f0f23;
+            border: none;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -630,6 +746,17 @@
                 <option value="oleada">🌊 Oleada (asc)</option>
                 <option value="oleada_desc">🌊 Oleada (desc)</option>
             </select>
+            <button class="btn btn-secondary" id="toggleEnvBtn" onclick="toggleEnvVisibility()" title="Mostrar/ocultar checks de entorno">🌐 ✔</button>
+            <div class="env-manager">
+                <button class="btn btn-secondary" onclick="toggleEnvDropdown()">🌐 Entornos</button>
+                <div class="env-dropdown" id="envDropdown">
+                    <div id="envList"></div>
+                    <div class="env-dropdown-add">
+                        <input type="text" id="newEnvInput" placeholder="Nuevo entorno..." onkeydown="if(event.key==='Enter')addEnv()">
+                        <button onclick="addEnv()">+</button>
+                    </div>
+                </div>
+            </div>
             <button class="btn btn-secondary" onclick="applyDefaults()" title="Restaurar columnas y filtros por defecto">⚙ Defaults</button>
             <button class="btn btn-secondary" onclick="addColumn()">+ Columna</button>
         </div>
@@ -709,6 +836,7 @@
 
     <script>
         let boardData = [];
+        let environments = [];
         let currentColumnId = null;
         let editingTaskId = null;
         let activeFilter = "";
@@ -720,8 +848,12 @@
         async function loadBoard() {
             const scrollX = window.scrollX;
             const scrollY = window.scrollY;
-            const resp = await fetch(`/api/columns?sort=${currentSort}`);
-            boardData = await resp.json();
+            const [colResp, envResp] = await Promise.all([
+                fetch(`/api/columns?sort=${currentSort}`),
+                fetch("/api/environments")
+            ]);
+            boardData = await colResp.json();
+            environments = await envResp.json();
             renderFilterBar();
             renderBoard();
             window.scrollTo(scrollX, scrollY);
@@ -841,12 +973,21 @@
                         <div class="ticket-item ${tk.done ? 'done' : ''}">
                             <input type="checkbox" ${tk.done ? 'checked' : ''} data-title="${escapeHtml(tk.title)}" onchange="toggleTicket(${tk.id}, this.checked, this.dataset.title)">
                             <span>${escapeHtml(tk.title)}</span>
-                            <button style="margin-left:auto;background:none;border:none;color:#666;cursor:pointer;font-size:0.7rem;" onclick="deleteTicket(${tk.id})">✕</button>
+                            <div class="ticket-env-checks">
+                                ${environments.map(env => `<span class="ticket-env-check ${(tk.environments||[]).includes(env.id)?'checked':''}" onclick="toggleTicketEnv(event,${tk.id},${env.id},${task.id})">${escapeHtml(env.name)}</span>`).join("")}
+                            </div>
+                            <button style="background:none;border:none;color:#666;cursor:pointer;font-size:0.7rem;" onclick="deleteTicket(${tk.id})">✕</button>
                         </div>
                     `).join("")}
                     <div class="ticket-progress"><div class="ticket-progress-bar" style="width:${progress}%"></div></div>
                 </div>
             ` : "";
+
+            const taskEnvs = task.environments || [];
+            const envChecksHtml = environments.length > 0 ? `
+                <div class="env-checks">
+                    ${environments.map(env => `<span class="env-check ${taskEnvs.includes(env.id)?'checked':''}" onclick="toggleTaskEnv(event,${task.id},${env.id})"><span class="env-check-icon"></span>${escapeHtml(env.name)}</span>`).join("")}
+                </div>` : "";
 
             return `
                 <div class="task-card" draggable="true" ondragstart="dragStart(event, ${task.id})" data-task-id="${task.id}">
@@ -864,6 +1005,7 @@
                         ${task.labels ? `<span style="font-size:0.7rem;color:#888">🏷 ${escapeHtml(task.labels)}</span>` : ""}
                         ${totalTickets > 0 ? `<span style="font-size:0.7rem;color:#888">☑ ${doneCount}/${totalTickets}</span>` : ""}
                     </div>
+                    ${envChecksHtml}
                     ${screenshotHtml}
                     ${lastComment}
                     ${jiraUpdatedHtml}
@@ -1427,8 +1569,111 @@
 
         // Keyboard shortcut para cerrar modal/lightbox
         document.addEventListener("keydown", e => {
-            if (e.key === "Escape") { closeModal(); closeLightbox(); closeColFilterModal(); }
+            if (e.key === "Escape") { closeModal(); closeLightbox(); closeColFilterModal(); closeEnvDropdown(); }
         });
+
+        // ═══════════════════════════════════════════
+        // ENTORNOS
+        // ═══════════════════════════════════════════
+        let envsVisible = localStorage.getItem("envsVisible") !== "false";
+        if (!envsVisible) document.body.classList.add("hide-envs");
+        function toggleEnvVisibility() {
+            envsVisible = !envsVisible;
+            document.body.classList.toggle("hide-envs", !envsVisible);
+            localStorage.setItem("envsVisible", envsVisible);
+            const btn = document.getElementById("toggleEnvBtn");
+            btn.style.opacity = envsVisible ? "1" : "0.5";
+        }
+        // Set initial button opacity
+        document.addEventListener("DOMContentLoaded", () => {
+            const btn = document.getElementById("toggleEnvBtn");
+            if (btn) btn.style.opacity = envsVisible ? "1" : "0.5";
+        });
+
+        function toggleEnvDropdown() {
+            const dd = document.getElementById("envDropdown");
+            dd.classList.toggle("show");
+            if (dd.classList.contains("show")) renderEnvList();
+        }
+        function closeEnvDropdown() {
+            document.getElementById("envDropdown").classList.remove("show");
+        }
+        // Close dropdown on outside click
+        document.addEventListener("click", e => {
+            if (!e.target.closest(".env-manager")) closeEnvDropdown();
+        });
+
+        function renderEnvList() {
+            const list = document.getElementById("envList");
+            list.innerHTML = environments.map(env => `
+                <div class="env-dropdown-item">
+                    <span>${escapeHtml(env.name)}</span>
+                    <button onclick="deleteEnv(${env.id})" title="Eliminar">✕</button>
+                </div>
+            `).join("") || '<div style="font-size:0.8rem;color:#666;padding:4px;">No hay entornos</div>';
+        }
+
+        async function addEnv() {
+            const input = document.getElementById("newEnvInput");
+            const name = input.value.trim();
+            if (!name) return;
+            const resp = await fetch("/api/environments", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name })
+            });
+            if (resp.ok) {
+                input.value = "";
+                await loadBoard();
+                renderEnvList();
+            } else {
+                const err = await resp.json();
+                alert(err.error || "Error");
+            }
+        }
+
+        async function deleteEnv(envId) {
+            if (!confirm("¿Eliminar este entorno? Se quitará de todas las incidencias.")) return;
+            await fetch(`/api/environments/${envId}`, { method: "DELETE" });
+            await loadBoard();
+            renderEnvList();
+        }
+
+        async function toggleTaskEnv(event, taskId, envId) {
+            event.stopPropagation();
+            const resp = await fetch(`/api/tasks/${taskId}/environments/${envId}`, { method: "POST" });
+            if (resp.ok) {
+                const data = await resp.json();
+                // Update local state
+                const task = boardData.flatMap(c => c.tasks).find(t => t.id === taskId);
+                if (task) {
+                    if (data.checked) {
+                        if (!task.environments.includes(envId)) task.environments.push(envId);
+                    } else {
+                        task.environments = task.environments.filter(id => id !== envId);
+                    }
+                }
+                // Re-render just the env checks inline
+                const card = document.querySelector(`[data-task-id="${taskId}"]`);
+                if (card) {
+                    const envDiv = card.querySelector(".env-checks");
+                    if (envDiv) {
+                        envDiv.innerHTML = environments.map(env =>
+                            `<span class="env-check ${(task.environments||[]).includes(env.id)?'checked':''}" onclick="toggleTaskEnv(event,${taskId},${env.id})"><span class="env-check-icon"></span>${escapeHtml(env.name)}</span>`
+                        ).join("");
+                    }
+                }
+            }
+        }
+
+        async function toggleTicketEnv(event, ticketId, envId, taskId) {
+            event.stopPropagation();
+            const resp = await fetch(`/api/tickets/${ticketId}/environments/${envId}`, { method: "POST" });
+            if (resp.ok) {
+                // Reload to get updated parent auto-check state
+                await loadBoard();
+            }
+        }
 
         // Init
         loadBoard();
