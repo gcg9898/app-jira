@@ -187,6 +187,34 @@ def migrate_db():
 
 migrate_db()
 
+# Default column-filter configuration
+DEFAULT_COLUMN_FILTERS = {
+    "Por Hacer": ["Abierto", "Abierta", "Open", "To Do", "Nuevo"],
+    "En Progreso": ["En Progreso", "In Progress", "En Desarrollo", "Respondido"],
+    "En Revisión": ["En Espera de Usuario", "Esperando", "Waiting", "En Espera"],
+    "Hecho": ["Cerrado", "Finalizado", "Resuelto", "Closed", "Done", "Desaparecidas del filtro"],
+}
+
+
+def _apply_default_filters(conn):
+    """Apply default filters to default columns. Creates columns if they don't exist."""
+    for col_name, filters in DEFAULT_COLUMN_FILTERS.items():
+        col = conn.execute("SELECT id FROM columns WHERE name = ?", (col_name,)).fetchone()
+        if not col:
+            max_pos = conn.execute("SELECT COALESCE(MAX(position), -1) FROM columns").fetchone()[0]
+            conn.execute("INSERT INTO columns (name, position, is_default) VALUES (?, ?, 1)",
+                         (col_name, max_pos + 1))
+            col_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        else:
+            col_id = col["id"]
+        # Clear existing filters for this column and set defaults
+        conn.execute("DELETE FROM column_filters WHERE column_id = ?", (col_id,))
+        for label in filters:
+            # Remove this label from any other column to avoid conflicts
+            conn.execute("DELETE FROM column_filters WHERE label = ? AND column_id != ?", (label, col_id))
+            conn.execute("INSERT OR IGNORE INTO column_filters (column_id, label) VALUES (?, ?)",
+                         (col_id, label))
+
 
 # ═══════════════════════════════════════════════════════════════
 # RUTAS - VISTAS

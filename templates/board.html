@@ -1271,8 +1271,7 @@
                 const data = await resp.json();
                 if (data.ok) {
                     showToast(`✓ Sincronizado: ${data.total} incidencias (${data.imported} nuevas)`);
-                    loadBoard();
-                    // polling continues for screenshots phase...
+                    // Don't loadBoard() here — wait for polling to detect "done" phase
                 } else {
                     clearInterval(pollInterval);
                     progressEl.classList.remove("active");
