@@ -205,7 +205,7 @@ DEFAULT_COLUMN_FILTERS = {
 
 def _apply_default_filters(conn):
     """Apply default filters to default columns. Creates columns if they don't exist.
-       Does NOT remove user-created columns."""
+       Does NOT remove user-created columns. Moves orphaned tasks to Sin Asignación."""
     for col_name, filters in DEFAULT_COLUMN_FILTERS.items():
         col = conn.execute("SELECT id FROM columns WHERE name = ?", (col_name,)).fetchone()
         if not col:
@@ -223,6 +223,18 @@ def _apply_default_filters(conn):
             conn.execute("DELETE FROM column_filters WHERE label = ? AND column_id != ?", (label, col_id))
             conn.execute("INSERT OR IGNORE INTO column_filters (column_id, label) VALUES (?, ?)",
                          (col_id, label))
+    # Move orphaned tasks (column_id doesn't exist) to "Sin Asignación"
+    sin_asig = conn.execute("SELECT id FROM columns WHERE name = 'Sin Asignación'").fetchone()
+    if sin_asig:
+        conn.execute("""UPDATE tasks SET column_id = ?, column_override = 0
+                        WHERE column_id NOT IN (SELECT id FROM columns)""",
+                     (sin_asig["id"],))
+        # Move manual tasks (no jira_key) from default columns to "Sin Asignación"
+        conn.execute("""UPDATE tasks SET column_id = ?
+                        WHERE (jira_key IS NULL OR jira_key = '')
+                          AND column_id != ?
+                          AND column_id IN (SELECT id FROM columns WHERE is_default = 1)""",
+                     (sin_asig["id"], sin_asig["id"]))
 
 
 # ═══════════════════════════════════════════════════════════════

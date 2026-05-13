@@ -767,7 +767,8 @@
                 const colFilters = col.filter_labels || [];
                 if (colFilters.length > 0) {
                     tasks = tasks.filter(t => {
-                        if (!t.jira_status) return false;
+                        if (!t.jira_key) return true; // Always show manual tasks
+                        if (!t.jira_status) return true;
                         return colFilters.some(f => t.jira_status.toLowerCase() === f.toLowerCase());
                     });
                 }
