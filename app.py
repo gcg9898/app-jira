@@ -509,9 +509,24 @@ def reorder_columns():
 
 @app.route("/api/columns/apply-defaults", methods=["POST"])
 def apply_default_columns():
-    """Apply default columns and filters without deleting user columns."""
+    """Apply default columns and filters without deleting user columns. Reassign tasks by status."""
     conn = get_db()
     _apply_default_filters(conn)
+    # Reassign Jira tasks based on column_filters
+    columns = conn.execute("SELECT id FROM columns").fetchall()
+    for col in columns:
+        filters = conn.execute("SELECT label FROM column_filters WHERE column_id = ?", (col["id"],)).fetchall()
+        labels = [f["label"] for f in filters]
+        if labels:
+            placeholders = ",".join("?" * len(labels))
+            conn.execute(
+                f"""UPDATE tasks SET column_id = ?, column_override = 0
+                    WHERE jira_key IS NOT NULL AND jira_key != ''
+                    AND column_override = 0
+                    AND deleted = 0
+                    AND jira_status IN ({placeholders})""",
+                [col["id"]] + labels
+            )
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
