@@ -13,9 +13,19 @@ import uuid
 import os
 import sys
 import shutil
+import ctypes
 from pathlib import Path
 
 import sqlite3
+
+# Enable DPI awareness so coordinates match physical pixels on all monitors
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 API_URL = "http://localhost:5000"
 DB_PATH = Path(__file__).parent / "board.db"
@@ -78,22 +88,21 @@ class ScreenshotSelector:
         self.full_screenshot = ImageGrab.grab(all_screens=True)
 
         # Get virtual screen bounds (all monitors combined)
-        import ctypes
         user32 = ctypes.windll.user32
-        # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN = top-left of virtual desktop
         self.virt_left = user32.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
         self.virt_top = user32.GetSystemMetrics(77)    # SM_YVIRTUALSCREEN
         self.virt_width = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
         self.virt_height = user32.GetSystemMetrics(79) # SM_CYVIRTUALSCREEN
 
-        self.root = tk.Tk()
+        self.root = tk.Toplevel() if tk._default_root else tk.Tk()
         self.root.overrideredirect(True)
-        # Position window to cover ALL monitors
         self.root.geometry(f"{self.virt_width}x{self.virt_height}+{self.virt_left}+{self.virt_top}")
         self.root.attributes("-alpha", 0.3)
         self.root.attributes("-topmost", True)
         self.root.configure(bg="black")
         self.root.config(cursor="crosshair")
+        self.root.lift()
+        self.root.focus_force()
 
         # Ratio between physical screenshot pixels and logical virtual screen size
         self.scale_x = self.full_screenshot.width / self.virt_width
@@ -107,7 +116,11 @@ class ScreenshotSelector:
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.root.bind("<Escape>", lambda e: self.cancel())
 
-        self.root.mainloop()
+        # Use wait_window if a Tk root already exists, else mainloop
+        if tk._default_root and tk._default_root != self.root:
+            self.root.wait_window(self.root)
+        else:
+            self.root.mainloop()
 
     def on_press(self, event):
         self.start_x = event.x
@@ -250,6 +263,13 @@ class TaskPopup:
                                     font=("Segoe UI", 8))
         self.photo_label.pack(side="left")
 
+        # Preview frame for captured screenshot
+        self.preview_frame = tk.Frame(frame, bg="#1a1a2e")
+        self.preview_frame.pack(fill="x", pady=(2, 0))
+        self.preview_label = tk.Label(self.preview_frame, bg="#1a1a2e")
+        self.preview_label.pack(anchor="w")
+        self._preview_img = None  # keep reference to prevent GC
+
         btn_frame = tk.Frame(frame, bg="#1a1a2e")
         btn_frame.pack(fill="x", pady=(12, 0))
         tk.Button(btn_frame, text="Cancelar", bg="#2a2a4a", fg="#e0e0e0",
@@ -291,12 +311,21 @@ class TaskPopup:
     def _do_screenshot(self):
         def on_done(filename):
             if filename:
+                # Delete previous capture if it was a temporary one
+                if self.attached_screenshot and self.attached_screenshot.startswith("capture_"):
+                    old_path = SCREENSHOTS_DIR / self.attached_screenshot
+                    if old_path.exists():
+                        try:
+                            old_path.unlink()
+                        except Exception:
+                            pass
                 self.attached_screenshot = filename
             if self.window:
                 self.window.deiconify()
                 self.window.attributes("-topmost", True)
                 if filename:
                     self.photo_label.config(text=filename, fg="#16c79a")
+                    self._show_preview(SCREENSHOTS_DIR / filename)
         ScreenshotSelector(on_done)
 
     def pick_file(self):
@@ -310,6 +339,23 @@ class TaskPopup:
             shutil.copy2(filepath, dest)
             self.attached_screenshot = filename
             self.photo_label.config(text=Path(filepath).name, fg="#16c79a")
+            self._show_preview(dest)
+
+    def _show_preview(self, filepath):
+        """Show a thumbnail preview of the captured/selected image."""
+        try:
+            from PIL import ImageTk
+            img = Image.open(str(filepath))
+            # Resize to fit max 400x120 keeping aspect ratio
+            img.thumbnail((400, 120), Image.LANCZOS)
+            self._preview_img = ImageTk.PhotoImage(img)
+            self.preview_label.config(image=self._preview_img)
+            # Expand window height to fit preview
+            w = self.window.winfo_width()
+            h = self.window.winfo_height() + 130
+            self.window.geometry(f"{w}x{h}")
+        except Exception:
+            pass
 
     def save(self):
         title = self.title_entry.get().strip()

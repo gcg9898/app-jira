@@ -437,6 +437,17 @@ def delete_task(task_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/open-new-task", methods=["POST"])
+def open_new_task_popup():
+    """Trigger the tray app's Ctrl+Alt+N hotkey to open the tkinter popup."""
+    try:
+        import keyboard
+        keyboard.send("ctrl+alt+n")
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # ═══════════════════════════════════════════════════════════════
 # API - TICKETS (subtareas dentro de una tarea)
 # ═══════════════════════════════════════════════════════════════
