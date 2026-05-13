@@ -289,9 +289,11 @@ class TaskPopup:
         # Preview frame for captured screenshot
         self.preview_frame = tk.Frame(frame, bg="#1a1a2e")
         self.preview_frame.pack(fill="x", pady=(2, 0))
-        self.preview_label = tk.Label(self.preview_frame, bg="#1a1a2e")
+        self.preview_label = tk.Label(self.preview_frame, bg="#1a1a2e", cursor="hand2")
         self.preview_label.pack(anchor="w")
+        self.preview_label.bind("<Button-1>", lambda e: self._open_preview_fullsize())
         self._preview_img = None  # keep reference to prevent GC
+        self._preview_filepath = None
 
         btn_frame = tk.Frame(frame, bg="#1a1a2e")
         btn_frame.pack(fill="x", pady=(12, 0))
@@ -372,6 +374,45 @@ class TaskPopup:
             img.thumbnail((400, 120), Image.LANCZOS)
             self._preview_img = ImageTk.PhotoImage(img)
             self.preview_label.config(image=self._preview_img)
+            self._preview_filepath = str(filepath)
+        except Exception:
+            pass
+
+    def _open_preview_fullsize(self):
+        """Open the captured image in a fullsize lightbox window."""
+        if not self._preview_filepath:
+            return
+        try:
+            from PIL import ImageTk
+            img = Image.open(self._preview_filepath)
+
+            lb = tk.Toplevel(self.window)
+            lb.title("Vista previa")
+            lb.configure(bg="#0a0a1a")
+            lb.attributes("-topmost", True)
+
+            # Size the window to fit image, capped at 90% of screen
+            sw = lb.winfo_screenwidth()
+            sh = lb.winfo_screenheight()
+            max_w = int(sw * 0.9)
+            max_h = int(sh * 0.9)
+
+            display_img = img.copy()
+            display_img.thumbnail((max_w, max_h), Image.LANCZOS)
+
+            ww = display_img.width + 20
+            wh = display_img.height + 20
+            x = (sw - ww) // 2
+            y = (sh - wh) // 2
+            lb.geometry(f"{ww}x{wh}+{x}+{y}")
+
+            lb._photo = ImageTk.PhotoImage(display_img)
+            lbl = tk.Label(lb, image=lb._photo, bg="#0a0a1a", cursor="hand2")
+            lbl.pack(expand=True)
+
+            # Click or Escape to close
+            lbl.bind("<Button-1>", lambda e: lb.destroy())
+            lb.bind("<Escape>", lambda e: lb.destroy())
         except Exception:
             pass
 
