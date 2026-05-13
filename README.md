@@ -74,6 +74,21 @@ app jira/
 └── screenshots/     # Capturas automáticas de Jira (NO incluidas)
 ```
 
+## Instalación del ejecutable (.exe)
+
+El ejecutable compilado se encuentra en la carpeta **`dist/JiraBoard.exe`** del repositorio.
+
+Para usarlo:
+
+1. **Crea una carpeta nueva** en tu equipo donde quieras tener la aplicación (por ejemplo `C:\JiraBoard\`).
+2. **Copia `JiraBoard.exe`** de `dist/` a esa carpeta.
+3. **Crea el fichero `.env`** en la misma carpeta con tus credenciales (ver sección *Configuración inicial*).
+4. **Ejecuta `JiraBoard.exe`** haciendo doble clic.
+
+> **Importante:** el ejecutable genera ficheros locales (`board.db`, `screenshots/`, etc.) en la carpeta donde se encuentra, así que es necesario que tenga su propia carpeta dedicada. No lo dejes suelto en el escritorio ni en una carpeta compartida con otros archivos.
+
+La aplicación comprueba automáticamente si hay una versión más reciente en GitHub y ofrece actualizarse.
+
 ## Notas
 
 - El fichero `.env`, `board.db` y `screenshots/` están en `.gitignore` y **no se suben al repositorio**.
