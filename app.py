@@ -116,6 +116,14 @@ def init_db():
             position INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS column_filters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            column_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            FOREIGN KEY (column_id) REFERENCES columns(id) ON DELETE CASCADE,
+            UNIQUE(column_id, label)
+        );
     """)
     # Crear columnas por defecto si no existen
     existing = conn.execute("SELECT COUNT(*) FROM columns").fetchone()[0]
@@ -148,6 +156,26 @@ def migrate_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN jira_column_id INTEGER DEFAULT NULL")
     if "column_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN column_override INTEGER DEFAULT 0")
+    # Add is_default flag to columns
+    col_cols = [row[1] for row in conn.execute("PRAGMA table_info(columns)").fetchall()]
+    if "is_default" not in col_cols:
+        conn.execute("ALTER TABLE columns ADD COLUMN is_default INTEGER DEFAULT 0")
+        # Mark existing default columns
+        default_names = ("Por Hacer", "En Progreso", "En Revisión", "Hecho")
+        conn.execute(
+            f"UPDATE columns SET is_default = 1 WHERE name IN ({','.join('?' * len(default_names))})",
+            default_names
+        )
+    # Create column_filters table if not exists
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS column_filters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            column_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            FOREIGN KEY (column_id) REFERENCES columns(id) ON DELETE CASCADE,
+            UNIQUE(column_id, label)
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -287,7 +315,10 @@ def get_columns():
                           "low": 3, "baja": 3, "lowest": 4, "muy baja": 4}
             tasks_list.sort(key=lambda t: PRIO_ORDER.get(t.get("priority", "Normal").lower().strip(), 5))
 
-        result.append({**dict(col), "tasks": tasks_list})
+        result.append({**dict(col), "tasks": tasks_list,
+                       "filter_labels": [r["label"] for r in conn.execute(
+                           "SELECT label FROM column_filters WHERE column_id = ? ORDER BY label",
+                           (col["id"],)).fetchall()]})
     conn.close()
     return jsonify(result)
 
@@ -317,6 +348,10 @@ def update_column(col_id):
 @app.route("/api/columns/<int:col_id>", methods=["DELETE"])
 def delete_column(col_id):
     conn = get_db()
+    col = conn.execute("SELECT is_default FROM columns WHERE id = ?", (col_id,)).fetchone()
+    if col and col["is_default"]:
+        conn.close()
+        return jsonify({"error": "No se pueden borrar columnas por defecto"}), 403
     conn.execute("DELETE FROM columns WHERE id = ?", (col_id,))
     conn.commit()
     conn.close()
@@ -330,6 +365,30 @@ def reorder_columns():
     conn = get_db()
     for pos, col_id in enumerate(order):
         conn.execute("UPDATE columns SET position = ? WHERE id = ?", (pos, int(col_id)))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/columns/<int:col_id>/filters", methods=["GET"])
+def get_column_filters(col_id):
+    conn = get_db()
+    rows = conn.execute("SELECT label FROM column_filters WHERE column_id = ? ORDER BY label", (col_id,)).fetchall()
+    conn.close()
+    return jsonify([row["label"] for row in rows])
+
+
+@app.route("/api/columns/<int:col_id>/filters", methods=["PUT"])
+def set_column_filters(col_id):
+    """Replace all filters for a column with the given list of labels."""
+    data = request.json
+    labels = data.get("labels", [])
+    conn = get_db()
+    conn.execute("DELETE FROM column_filters WHERE column_id = ?", (col_id,))
+    for label in labels:
+        label = label.strip()
+        if label:
+            conn.execute("INSERT OR IGNORE INTO column_filters (column_id, label) VALUES (?, ?)", (col_id, label))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})

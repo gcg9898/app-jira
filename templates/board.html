@@ -10,9 +10,9 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #0f0f23;
             color: #e0e0e0;
-            height: 100vh;
+            min-height: 100vh;
             overflow-y: auto;
-            overflow-x: hidden;
+            overflow-x: auto;
         }
 
         /* Header */
@@ -497,6 +497,115 @@
             margin-right: 6px;
             cursor: grab;
         }
+        .btn-delete-col {
+            background: none;
+            border: none;
+            color: #666;
+            font-size: 0.85rem;
+            cursor: pointer;
+            margin-left: 8px;
+            padding: 2px 4px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        .btn-delete-col:hover {
+            background: #e74c3c;
+            color: #fff;
+        }
+
+        /* Column filter button */
+        .btn-col-filter {
+            background: none;
+            border: none;
+            color: #666;
+            font-size: 0.8rem;
+            cursor: pointer;
+            margin-left: 6px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        .btn-col-filter:hover {
+            background: #2a2a4a;
+            color: #16c79a;
+        }
+        .btn-col-filter.has-filters {
+            color: #16c79a;
+            background: rgba(22, 199, 154, 0.1);
+        }
+
+        /* Column filter modal */
+        .col-filter-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .col-filter-overlay.active { display: flex; }
+        .col-filter-modal {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 24px;
+            width: 420px;
+            max-width: 90vw;
+            max-height: 80vh;
+            border: 1px solid #2a2a4a;
+            display: flex;
+            flex-direction: column;
+        }
+        .col-filter-modal h3 {
+            margin-bottom: 12px;
+            color: #16c79a;
+            font-size: 1rem;
+        }
+        .col-filter-labels {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 12px;
+            max-height: 300px;
+        }
+        .col-filter-label-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .col-filter-label-item:hover {
+            background: #2a2a4a;
+        }
+        .col-filter-label-item input[type="checkbox"] {
+            accent-color: #16c79a;
+        }
+        .col-filter-label-item span {
+            font-size: 0.85rem;
+        }
+        .col-filter-add {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        .col-filter-add input {
+            flex: 1;
+            padding: 8px 10px;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            background: #0f0f23;
+            color: #e0e0e0;
+            font-size: 0.85rem;
+            outline: none;
+        }
+        .col-filter-add input:focus { border-color: #16c79a; }
+        .col-filter-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
     </style>
 </head>
 <body>
@@ -564,6 +673,22 @@
         </div>
     </div>
 
+    <!-- Modal filtros de columna -->
+    <div class="col-filter-overlay" id="colFilterOverlay">
+        <div class="col-filter-modal">
+            <h3 id="colFilterTitle">Filtrar etiquetas</h3>
+            <div class="col-filter-add">
+                <input type="text" id="colFilterNewLabel" placeholder="Escribir nueva etiqueta..." onkeydown="if(event.key==='Enter'){addCustomFilterLabel();event.preventDefault();}">
+                <button class="btn btn-primary" onclick="addCustomFilterLabel()" style="padding:6px 12px;font-size:0.8rem;">+ Añadir</button>
+            </div>
+            <div class="col-filter-labels" id="colFilterLabels"></div>
+            <div class="col-filter-actions">
+                <button class="btn btn-secondary" onclick="closeColFilterModal()">Cancelar</button>
+                <button class="btn btn-primary" onclick="saveColFilters()">Guardar</button>
+            </div>
+        </div>
+    </div>
+
     <div class="toast" id="toast"></div>
 
     <script>
@@ -620,8 +745,18 @@
                 colEl.dataset.colId = col.id;
 
                 let tasks = col.tasks;
+                // Apply global filter
                 if (activeFilter) {
                     tasks = tasks.filter(t => t.labels && t.labels.toLowerCase().includes(activeFilter.toLowerCase()));
+                }
+                // Apply per-column label filters
+                const colFilters = col.filter_labels || [];
+                if (colFilters.length > 0) {
+                    tasks = tasks.filter(t => {
+                        if (!t.labels) return false;
+                        const taskLabels = t.labels.toLowerCase().split(",").map(l => l.trim());
+                        return colFilters.some(f => taskLabels.includes(f.toLowerCase()));
+                    });
                 }
 
                 const taskCount = tasks.length;
@@ -632,11 +767,16 @@
                 colEl.addEventListener("drop", e => colDrop(e));
                 colEl.addEventListener("dragend", colDragEnd);
 
+                const deleteBtn = col.is_default ? '' : `<button class="btn-delete-col" onclick="deleteColumn(${col.id})" title="Borrar columna">🗑</button>`;
+                const hasFilters = colFilters.length > 0;
+                const filterBtn = `<button class="btn-col-filter ${hasFilters ? 'has-filters' : ''}" onclick="openColFilterModal(${col.id})" title="${hasFilters ? 'Filtros: ' + colFilters.join(', ') : 'Filtrar por etiquetas'}">🏷${hasFilters ? ' ' + colFilters.length : ''}</button>`;
                 colEl.innerHTML = `
                     <div class="column-header">
                         <span class="col-drag-handle">⠿</span>
                         <h2>${col.name}</h2>
                         <span class="column-count">${taskCount}</span>
+                        ${filterBtn}
+                        ${deleteBtn}
                     </div>
                     <div class="column-tasks" data-col-id="${col.id}"
                          ondrop="dropTask(event)" ondragover="dragOver(event)" ondragleave="dragLeave(event)">
@@ -942,6 +1082,100 @@
             loadBoard();
         }
 
+        async function deleteColumn(colId) {
+            if (!confirm("¿Eliminar esta columna y todas sus tareas?")) return;
+            const resp = await fetch(`/api/columns/${colId}`, { method: "DELETE" });
+            if (resp.ok) {
+                showToast("Columna eliminada");
+                loadBoard();
+            } else {
+                const data = await resp.json();
+                showToast("✖ " + (data.error || "No se pudo borrar"));
+            }
+        }
+
+        // ═══════════════════════════════════════════
+        // FILTROS POR COLUMNA
+        // ═══════════════════════════════════════════
+        let colFilterColumnId = null;
+        let colFilterSelected = new Set();
+
+        function getAllLabels() {
+            const allLabels = new Set();
+            boardData.forEach(col => col.tasks.forEach(t => {
+                if (t.labels) t.labels.split(",").forEach(l => { const lt = l.trim(); if (lt) allLabels.add(lt); });
+            }));
+            return [...allLabels].sort();
+        }
+
+        function openColFilterModal(colId) {
+            colFilterColumnId = colId;
+            const col = boardData.find(c => c.id === colId);
+            if (!col) return;
+
+            const currentFilters = col.filter_labels || [];
+            colFilterSelected = new Set(currentFilters);
+
+            document.getElementById("colFilterTitle").textContent = `Filtrar etiquetas — ${col.name}`;
+            document.getElementById("colFilterNewLabel").value = "";
+            renderColFilterLabels();
+            document.getElementById("colFilterOverlay").classList.add("active");
+        }
+
+        function renderColFilterLabels() {
+            const container = document.getElementById("colFilterLabels");
+            const allLabels = getAllLabels();
+            // Merge: all labels from tasks + any custom ones already selected
+            const merged = new Set([...allLabels, ...colFilterSelected]);
+            const sorted = [...merged].sort();
+
+            container.innerHTML = sorted.map(label => {
+                const checked = colFilterSelected.has(label) ? "checked" : "";
+                return `<label class="col-filter-label-item">
+                    <input type="checkbox" ${checked} onchange="toggleColFilterLabel('${escapeHtml(label)}', this.checked)">
+                    <span>${escapeHtml(label)}</span>
+                </label>`;
+            }).join("");
+
+            if (sorted.length === 0) {
+                container.innerHTML = `<p style="color:#666;font-size:0.8rem;padding:8px;">No hay etiquetas disponibles. Escribe una nueva arriba.</p>`;
+            }
+        }
+
+        function toggleColFilterLabel(label, checked) {
+            if (checked) {
+                colFilterSelected.add(label);
+            } else {
+                colFilterSelected.delete(label);
+            }
+        }
+
+        function addCustomFilterLabel() {
+            const input = document.getElementById("colFilterNewLabel");
+            const label = input.value.trim();
+            if (!label) return;
+            colFilterSelected.add(label);
+            input.value = "";
+            renderColFilterLabels();
+        }
+
+        function closeColFilterModal() {
+            document.getElementById("colFilterOverlay").classList.remove("active");
+            colFilterColumnId = null;
+        }
+
+        async function saveColFilters() {
+            if (colFilterColumnId === null) return;
+            const labels = [...colFilterSelected];
+            await fetch(`/api/columns/${colFilterColumnId}/filters`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ labels })
+            });
+            closeColFilterModal();
+            loadBoard();
+        }
+
         // ═══════════════════════════════════════════
         // SYNC JIRA
         // ═══════════════════════════════════════════
@@ -1150,7 +1384,7 @@
 
         // Keyboard shortcut para cerrar modal/lightbox
         document.addEventListener("keydown", e => {
-            if (e.key === "Escape") { closeModal(); closeLightbox(); }
+            if (e.key === "Escape") { closeModal(); closeLightbox(); closeColFilterModal(); }
         });
 
         // Init
