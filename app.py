@@ -779,10 +779,6 @@ def restore_column(task_id):
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
 def delete_task(task_id):
     conn = get_db()
-    task = conn.execute("SELECT jira_key FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if task and task["jira_key"]:
-        conn.close()
-        return jsonify({"error": "No se pueden borrar incidencias de Jira"}), 403
     conn.execute("UPDATE tasks SET deleted = 1 WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
@@ -1041,10 +1037,15 @@ def sync_jira():
             last_comment = f"[{autor}] {body}"
 
         # Ver si ya existe
-        existing = conn.execute("SELECT id, column_override, priority_override FROM tasks WHERE jira_key = ?", (key,)).fetchone()
+        existing = conn.execute("SELECT id, column_override, priority_override, deleted FROM tasks WHERE jira_key = ?", (key,)).fetchone()
         col_id = get_column_id(status)
 
         if existing:
+            # Skip deleted tasks — don't restore them on sync
+            if existing["deleted"]:
+                _sync_progress["done"] += 1
+                _sync_progress["current"] = key
+                continue
             # Respect manual priority override
             task_priority = priority if not existing["priority_override"] else None
             if existing["column_override"]:
@@ -1108,10 +1109,12 @@ def sync_jira():
         if any(f["label"] == "Desaparecidas del filtro" for f in filters):
             disappeared_col_id = c["id"]
             break
-    # Fallback to "Hecho" column if no column has the special filter
+    # Fallback to "Sin Asignación" if no column has the special filter
     if disappeared_col_id is None:
-        disappeared_col_id = col_map.get("hecho", columns[3]["id"] if len(columns) > 3 else columns[-1]["id"])
-    all_jira_tasks = conn.execute("SELECT id, jira_key, column_id FROM tasks WHERE jira_key != ''").fetchall()
+        sin_asig = conn.execute("SELECT id FROM columns WHERE name = 'Sin Asignación'").fetchone()
+        disappeared_col_id = sin_asig["id"] if sin_asig else columns[-1]["id"]
+    # Only move non-deleted Jira tasks that disappeared from the filter
+    all_jira_tasks = conn.execute("SELECT id, jira_key, column_id FROM tasks WHERE jira_key != '' AND deleted = 0").fetchall()
     for task in all_jira_tasks:
         if task["jira_key"] not in synced_keys and task["column_id"] != disappeared_col_id:
             conn.execute("UPDATE tasks SET column_id=?, jira_column_id=?, column_override=0, jira_status='Desaparecida del filtro', updated_at=? WHERE id=?",

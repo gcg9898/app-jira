@@ -2,6 +2,16 @@
 JIRABOARD - CHANGELOG
 ═══════════════════════════════════════════════════════════════
 
+[3e1c131] 2026-05-13
+─────────────────────
+- Se pueden eliminar todas las columnas (incluyendo las por defecto)
+- Al eliminar una columna, las tareas pasan a "Sin Asignación"
+- Defaults recrea las columnas por defecto y reasigna las tareas según su estado
+- Al añadir un estado a una columna, las tareas con ese estado se mueven automáticamente
+- Las incidencias de Jira se pueden borrar (van a la papelera)
+- La sincronización no restaura incidencias borradas
+- Las incidencias que desaparecen del filtro Jira van a "Desaparecidas del filtro" (o "Sin Asignación" si no existe esa columna)
+
 [7a3a3f1] 2026-05-13
 ─────────────────────
 - Novedades al actualizar: al comprobar actualizaciones se muestra una ventana con los cambios entre tu versión y la nueva
