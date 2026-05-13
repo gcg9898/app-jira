@@ -839,7 +839,7 @@ class LauncherApp:
         win = tk.Toplevel(self.root)
         win.title(title)
         win.configure(bg="#1a1a2e")
-        win.geometry("500x400")
+        win.geometry("650x520")
         win.resizable(True, True)
         win.transient(self.root)
         win.grab_set()
