@@ -469,10 +469,6 @@ def update_column(col_id):
 @app.route("/api/columns/<int:col_id>", methods=["DELETE"])
 def delete_column(col_id):
     conn = get_db()
-    col = conn.execute("SELECT is_default FROM columns WHERE id = ?", (col_id,)).fetchone()
-    if col and col["is_default"]:
-        conn.close()
-        return jsonify({"error": "No se pueden borrar columnas por defecto"}), 403
     # Move tasks to "Sin Asignación" column
     sin_asig = conn.execute("SELECT id FROM columns WHERE name = 'Sin Asignación'").fetchone()
     if not sin_asig:
@@ -482,6 +478,14 @@ def delete_column(col_id):
         sin_asig_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     else:
         sin_asig_id = sin_asig["id"]
+    # If deleting "Sin Asignación" itself, move tasks to first available column
+    if col_id == sin_asig_id:
+        alt = conn.execute("SELECT id FROM columns WHERE id != ? ORDER BY position LIMIT 1", (col_id,)).fetchone()
+        if alt:
+            sin_asig_id = alt["id"]
+        else:
+            conn.close()
+            return jsonify({"error": "No se puede borrar la única columna"}), 403
     conn.execute("UPDATE tasks SET column_id = ?, column_override = 0 WHERE column_id = ?",
                  (sin_asig_id, col_id))
     conn.execute("DELETE FROM column_filters WHERE column_id = ?", (col_id,))
@@ -614,7 +618,8 @@ def get_column_filters(col_id):
 
 @app.route("/api/columns/<int:col_id>/filters", methods=["PUT"])
 def set_column_filters(col_id):
-    """Replace all filters for a column with the given list of jira statuses."""
+    """Replace all filters for a column with the given list of jira statuses.
+    Also reassign matching Jira tasks to this column."""
     data = request.json
     labels = data.get("labels", [])
     conn = get_db()
@@ -632,10 +637,23 @@ def set_column_filters(col_id):
             conn.close()
             return jsonify({"error": f"El estado '{label_stripped}' ya está asignado a la columna '{col_name['name']}'"}), 409
     conn.execute("DELETE FROM column_filters WHERE column_id = ?", (col_id,))
+    clean_labels = []
     for label in labels:
         label = label.strip()
         if label:
             conn.execute("INSERT OR IGNORE INTO column_filters (column_id, label) VALUES (?, ?)", (col_id, label))
+            clean_labels.append(label)
+    # Reassign Jira tasks whose status matches the new filters to this column
+    if clean_labels:
+        placeholders = ",".join("?" * len(clean_labels))
+        conn.execute(
+            f"""UPDATE tasks SET column_id = ?, column_override = 0
+                WHERE jira_key IS NOT NULL AND jira_key != ''
+                AND column_override = 0
+                AND deleted = 0
+                AND jira_status IN ({placeholders})""",
+            [col_id] + clean_labels
+        )
     conn.commit()
     conn.close()
     return jsonify({"ok": True})

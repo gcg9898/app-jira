@@ -917,7 +917,7 @@
                 colEl.addEventListener("drop", e => colDrop(e));
                 colEl.addEventListener("dragend", colDragEnd);
 
-                const deleteBtn = col.is_default ? '' : `<button class="btn-delete-col" onclick="deleteColumn(${col.id})" title="Borrar columna">🗑</button>`;
+                const deleteBtn = `<button class="btn-delete-col" onclick="deleteColumn(${col.id})" title="Borrar columna">🗑</button>`;
                 const hasFilters = colFilters.length > 0;
                 const filterBtn = `<button class="btn-col-filter ${hasFilters ? 'has-filters' : ''}" onclick="openColFilterModal(${col.id})" title="${hasFilters ? 'Estados: ' + colFilters.join(', ') : 'Filtrar por estado Jira'}">📋${hasFilters ? ' ' + colFilters.length : ''}</button>`;
                 colEl.innerHTML = `
