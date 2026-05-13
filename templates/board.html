@@ -673,12 +673,12 @@
         </div>
     </div>
 
-    <!-- Modal filtros de columna -->
+    <!-- Modal filtros de columna (estados Jira) -->
     <div class="col-filter-overlay" id="colFilterOverlay">
         <div class="col-filter-modal">
-            <h3 id="colFilterTitle">Filtrar etiquetas</h3>
+            <h3 id="colFilterTitle">Filtrar por estado Jira</h3>
             <div class="col-filter-add">
-                <input type="text" id="colFilterNewLabel" placeholder="Escribir nueva etiqueta..." onkeydown="if(event.key==='Enter'){addCustomFilterLabel();event.preventDefault();}">
+                <input type="text" id="colFilterNewLabel" placeholder="Escribir estado personalizado..." onkeydown="if(event.key==='Enter'){addCustomFilterLabel();event.preventDefault();}">
                 <button class="btn btn-primary" onclick="addCustomFilterLabel()" style="padding:6px 12px;font-size:0.8rem;">+ Añadir</button>
             </div>
             <div class="col-filter-labels" id="colFilterLabels"></div>
@@ -749,13 +749,12 @@
                 if (activeFilter) {
                     tasks = tasks.filter(t => t.labels && t.labels.toLowerCase().includes(activeFilter.toLowerCase()));
                 }
-                // Apply per-column label filters
+                // Apply per-column jira_status filters
                 const colFilters = col.filter_labels || [];
                 if (colFilters.length > 0) {
                     tasks = tasks.filter(t => {
-                        if (!t.labels) return false;
-                        const taskLabels = t.labels.toLowerCase().split(",").map(l => l.trim());
-                        return colFilters.some(f => taskLabels.includes(f.toLowerCase()));
+                        if (!t.jira_status) return false;
+                        return colFilters.some(f => t.jira_status.toLowerCase() === f.toLowerCase());
                     });
                 }
 
@@ -769,7 +768,7 @@
 
                 const deleteBtn = col.is_default ? '' : `<button class="btn-delete-col" onclick="deleteColumn(${col.id})" title="Borrar columna">🗑</button>`;
                 const hasFilters = colFilters.length > 0;
-                const filterBtn = `<button class="btn-col-filter ${hasFilters ? 'has-filters' : ''}" onclick="openColFilterModal(${col.id})" title="${hasFilters ? 'Filtros: ' + colFilters.join(', ') : 'Filtrar por etiquetas'}">🏷${hasFilters ? ' ' + colFilters.length : ''}</button>`;
+                const filterBtn = `<button class="btn-col-filter ${hasFilters ? 'has-filters' : ''}" onclick="openColFilterModal(${col.id})" title="${hasFilters ? 'Estados: ' + colFilters.join(', ') : 'Filtrar por estado Jira'}">📋${hasFilters ? ' ' + colFilters.length : ''}</button>`;
                 colEl.innerHTML = `
                     <div class="column-header">
                         <span class="col-drag-handle">⠿</span>
@@ -1095,17 +1094,17 @@
         }
 
         // ═══════════════════════════════════════════
-        // FILTROS POR COLUMNA
+        // FILTROS POR COLUMNA (estados Jira)
         // ═══════════════════════════════════════════
         let colFilterColumnId = null;
         let colFilterSelected = new Set();
 
-        function getAllLabels() {
-            const allLabels = new Set();
+        function getAllJiraStatuses() {
+            const statuses = new Set();
             boardData.forEach(col => col.tasks.forEach(t => {
-                if (t.labels) t.labels.split(",").forEach(l => { const lt = l.trim(); if (lt) allLabels.add(lt); });
+                if (t.jira_status) statuses.add(t.jira_status);
             }));
-            return [...allLabels].sort();
+            return [...statuses].sort();
         }
 
         function openColFilterModal(colId) {
@@ -1116,7 +1115,7 @@
             const currentFilters = col.filter_labels || [];
             colFilterSelected = new Set(currentFilters);
 
-            document.getElementById("colFilterTitle").textContent = `Filtrar etiquetas — ${col.name}`;
+            document.getElementById("colFilterTitle").textContent = `Filtrar por estado Jira — ${col.name}`;
             document.getElementById("colFilterNewLabel").value = "";
             renderColFilterLabels();
             document.getElementById("colFilterOverlay").classList.add("active");
@@ -1124,21 +1123,21 @@
 
         function renderColFilterLabels() {
             const container = document.getElementById("colFilterLabels");
-            const allLabels = getAllLabels();
-            // Merge: all labels from tasks + any custom ones already selected
-            const merged = new Set([...allLabels, ...colFilterSelected]);
+            const allStatuses = getAllJiraStatuses();
+            // Merge: all statuses from tasks + any custom ones already selected
+            const merged = new Set([...allStatuses, ...colFilterSelected]);
             const sorted = [...merged].sort();
 
-            container.innerHTML = sorted.map(label => {
-                const checked = colFilterSelected.has(label) ? "checked" : "";
+            container.innerHTML = sorted.map(status => {
+                const checked = colFilterSelected.has(status) ? "checked" : "";
                 return `<label class="col-filter-label-item">
-                    <input type="checkbox" ${checked} onchange="toggleColFilterLabel('${escapeHtml(label)}', this.checked)">
-                    <span>${escapeHtml(label)}</span>
+                    <input type="checkbox" ${checked} onchange="toggleColFilterLabel('${escapeHtml(status)}', this.checked)">
+                    <span>${escapeHtml(status)}</span>
                 </label>`;
             }).join("");
 
             if (sorted.length === 0) {
-                container.innerHTML = `<p style="color:#666;font-size:0.8rem;padding:8px;">No hay etiquetas disponibles. Escribe una nueva arriba.</p>`;
+                container.innerHTML = `<p style="color:#666;font-size:0.8rem;padding:8px;">No hay estados Jira disponibles. Escribe uno nuevo arriba.</p>`;
             }
         }
 

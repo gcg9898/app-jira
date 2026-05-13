@@ -380,7 +380,7 @@ def get_column_filters(col_id):
 
 @app.route("/api/columns/<int:col_id>/filters", methods=["PUT"])
 def set_column_filters(col_id):
-    """Replace all filters for a column with the given list of labels."""
+    """Replace all filters for a column with the given list of jira statuses."""
     data = request.json
     labels = data.get("labels", [])
     conn = get_db()
@@ -392,6 +392,15 @@ def set_column_filters(col_id):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+@app.route("/api/jira-statuses", methods=["GET"])
+def get_jira_statuses():
+    """Return all distinct jira_status values from tasks."""
+    conn = get_db()
+    rows = conn.execute("SELECT DISTINCT jira_status FROM tasks WHERE jira_status != ''").fetchall()
+    conn.close()
+    return jsonify(sorted([row["jira_status"] for row in rows]))
 
 
 # ═══════════════════════════════════════════════════════════════
