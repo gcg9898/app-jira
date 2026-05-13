@@ -197,7 +197,7 @@ migrate_db()
 # Default column-filter configuration
 DEFAULT_COLUMN_FILTERS = {
     "En Progreso": ["Abierto", "Abierta", "Open", "To Do", "Nuevo", "En Progreso", "In Progress", "En Desarrollo", "Respondido"],
-    "Esperando Respuesta Usuario": ["En Espera de Usuario", "Esperando", "Waiting", "En Espera"],
+    "Esperando Respuesta Usuario": ["En Espera de Usuario", "Esperando", "Waiting", "En Espera", "En Revisión", "In Review", "Under Review", "Review"],
     "Hecho": ["Cerrado", "Finalizado", "Resuelto", "Closed", "Done", "Desaparecidas del filtro"],
 }
 
