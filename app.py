@@ -139,6 +139,43 @@ def init_db():
 
 init_db()
 
+# Default column-filter configuration
+DEFAULT_COLUMN_FILTERS = {
+    "En Progreso": ["Abierto", "Abierta", "Open", "To Do", "Nuevo", "En Progreso", "In Progress", "En Desarrollo", "Respondido"],
+    "Esperando Respuesta Usuario": ["En Espera de Usuario", "Esperando", "Waiting", "En Espera", "En Revisión", "In Review", "Under Review", "Review"],
+    "Hecho": ["Cerrado", "Finalizado", "Resuelto", "Closed", "Done", "Desaparecidas del filtro"],
+    "Sin Asignación": [],
+}
+
+
+def _apply_default_filters(conn):
+    """Apply default filters to default columns. Creates columns if they don't exist.
+       Does NOT remove user-created columns. Moves orphaned tasks to Sin Asignación."""
+    for col_name, filters in DEFAULT_COLUMN_FILTERS.items():
+        col = conn.execute("SELECT id FROM columns WHERE name = ?", (col_name,)).fetchone()
+        if not col:
+            max_pos = conn.execute("SELECT COALESCE(MAX(position), -1) FROM columns").fetchone()[0]
+            conn.execute("INSERT INTO columns (name, position, is_default) VALUES (?, ?, 1)",
+                         (col_name, max_pos + 1))
+            col_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        else:
+            col_id = col["id"]
+            conn.execute("UPDATE columns SET is_default = 1 WHERE id = ?", (col_id,))
+        # Clear existing filters for this column and set defaults
+        conn.execute("DELETE FROM column_filters WHERE column_id = ?", (col_id,))
+        for label in filters:
+            # Remove this label from any other column to avoid conflicts
+            conn.execute("DELETE FROM column_filters WHERE label = ? AND column_id != ?", (label, col_id))
+            conn.execute("INSERT OR IGNORE INTO column_filters (column_id, label) VALUES (?, ?)",
+                         (col_id, label))
+    # Move orphaned tasks (column_id doesn't exist) to "Sin Asignación"
+    sin_asig = conn.execute("SELECT id FROM columns WHERE name = 'Sin Asignación'").fetchone()
+    if sin_asig:
+        conn.execute("""UPDATE tasks SET column_id = ?, column_override = 0
+                        WHERE column_id NOT IN (SELECT id FROM columns)""",
+                     (sin_asig["id"],))
+
+
 # Migration: add screenshot column if missing (existing DB)
 def migrate_db():
     conn = get_db()
