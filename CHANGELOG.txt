@@ -1,0 +1,43 @@
+═══════════════════════════════════════════════════════════════
+JIRABOARD - CHANGELOG
+═══════════════════════════════════════════════════════════════
+
+[ddb50b0] 2026-05-13
+─────────────────────
+- Entornos (INT/PRE/PROD): checks en cada incidencia y ticket
+- Auto-propagación: si todos los tickets tienen un entorno, se marca la padre
+- Gestión de entornos desde cabecera (añadir/eliminar)
+- Botón para mostrar/ocultar checks de entorno globalmente
+- Papelera: pantalla para ver y restaurar incidencias borradas
+- Columna "Sin Asignación" como destino de incidencias huérfanas
+- Al borrar una columna, las incidencias van a "Sin Asignación"
+- Defaults ya no borra columnas del usuario
+- Tareas manuales siempre visibles en columnas con filtros
+
+[aaae21c] 2026-05-13
+─────────────────────
+- Ordenación por fecha estimada, fecha inicio y oleada
+- Todas las ordenaciones tienen dirección ascendente y descendente
+- Prioridad ordenable en ambas direcciones
+- Filtros por defecto incluyen estados de revisión en "Esperando Respuesta Usuario"
+
+[3977939] 2026-05-13
+─────────────────────
+- Filtros por columna (estados Jira asignables a cada columna)
+- Modal de filtros con checkboxes y estados personalizados
+- Validación de estados duplicados entre columnas
+- Botón "Defaults" para restaurar configuración por defecto
+- Eliminación de columnas (no default)
+- Soft delete de tareas manuales
+
+[b9f43f8] 2026-05-13
+─────────────────────
+- Mejora del routing de estados Jira a columnas
+- Soporte "Desaparecidas del filtro" para incidencias que salen del filtro Jira
+- Scroll horizontal cuando hay muchas columnas
+
+[6e0964b] 2026-05-13
+─────────────────────
+- Popup de nueva tarea con ventana redimensionable y scroll
+- Vista previa de capturas con lightbox
+- Instrucciones de instalación en README

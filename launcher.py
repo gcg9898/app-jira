@@ -155,6 +155,32 @@ def get_remote_version():
         return None
 
 
+def get_remote_changelog(local_ver, remote_ver):
+    """Fetch CHANGELOG.txt from GitHub and return entries between local and remote versions."""
+    try:
+        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/CHANGELOG.txt"
+        req = Request(url, headers={"User-Agent": "JiraBoard-Updater"})
+        with urlopen(req, timeout=10) as resp:
+            content = resp.read().decode("utf-8")
+    except (URLError, HTTPError, OSError):
+        return None
+
+    # Parse sections: each starts with [hash]
+    import re
+    sections = re.split(r'(?=^\[)', content, flags=re.MULTILINE)
+    result_lines = []
+    for section in sections:
+        match = re.match(r'\[([a-f0-9]+)\]', section)
+        if not match:
+            continue
+        ver = match.group(1)
+        if ver == local_ver:
+            break
+        result_lines.append(section.strip())
+
+    return "\n\n".join(result_lines) if result_lines else None
+
+
 def _get_exe_download_url():
     """Get the download_url for dist/JiraBoard.exe from GitHub Contents API."""
     import json
@@ -744,9 +770,12 @@ class LauncherApp:
     def _check_update_worker(self):
         local_ver = get_local_version()
         remote_ver = get_remote_version()
-        self.root.after(0, self._handle_update_result, local_ver, remote_ver)
+        changelog = None
+        if remote_ver and (local_ver is None or local_ver != remote_ver):
+            changelog = get_remote_changelog(local_ver, remote_ver)
+        self.root.after(0, self._handle_update_result, local_ver, remote_ver, changelog)
 
-    def _handle_update_result(self, local_ver, remote_ver):
+    def _handle_update_result(self, local_ver, remote_ver, changelog=None):
         self.update_btn.config(state="normal", text="\U0001F504 Comprobar actualizaciones")
 
         if remote_ver is None:
@@ -762,16 +791,16 @@ class LauncherApp:
             self.update_status_label.config(
                 text=f"{tag} {remote_ver} (actualización solo disponible en .exe)",
                 fg="#f5a623" if is_new else "#16c79a")
+            if is_new and changelog:
+                self._show_changelog(changelog, remote_ver)
             return
 
         if is_new:
             self.update_status_label.config(
                 text=f"Nueva versión disponible: {remote_ver}",
                 fg="#f5a623")
-            if messagebox.askyesno("Actualización disponible",
-                                   f"Hay una nueva versión ({remote_ver}).\n\n"
-                                   "¿Descargar e instalar ahora?\n"
-                                   "La aplicación se reiniciará automáticamente."):
+            should_update = self._show_changelog_and_ask(changelog, remote_ver)
+            if should_update:
                 self._start_download()
         else:
             self.update_status_label.config(
@@ -782,6 +811,93 @@ class LauncherApp:
                                    "¿Quieres descargarla de nuevo e instalarla?\n"
                                    "Esto puede solucionar errores de ejecución."):
                 self._start_download()
+
+    def _show_changelog_and_ask(self, changelog, remote_ver):
+        """Show changelog in a dialog and ask whether to update. Returns True if user wants to update."""
+        win = tk.Toplevel(self.root)
+        win.title(f"Novedades - v{remote_ver}")
+        win.configure(bg="#1a1a2e")
+        win.geometry("500x400")
+        win.resizable(True, True)
+        win.transient(self.root)
+        win.grab_set()
+
+        tk.Label(win, text=f"\U0001F4E2 Novedades en v{remote_ver}", bg="#1a1a2e", fg="#16c79a",
+                 font=("Segoe UI", 14, "bold")).pack(pady=(12, 8))
+
+        text_frame = tk.Frame(win, bg="#0f0f23")
+        text_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        text_widget = tk.Text(text_frame, bg="#0f0f23", fg="#e0e0e0", font=("Consolas", 9),
+                              wrap="word", relief="flat", yscrollcommand=scrollbar.set,
+                              padx=10, pady=10)
+        text_widget.pack(fill="both", expand=True)
+        scrollbar.config(command=text_widget.yview)
+
+        if changelog:
+            text_widget.insert("1.0", changelog)
+        else:
+            text_widget.insert("1.0", "No se pudo obtener el detalle de cambios.")
+        text_widget.config(state="disabled")
+
+        result = {"update": False}
+
+        btn_frame = tk.Frame(win, bg="#1a1a2e")
+        btn_frame.pack(fill="x", padx=16, pady=(0, 12))
+
+        def do_update():
+            result["update"] = True
+            win.destroy()
+
+        def do_cancel():
+            win.destroy()
+
+        tk.Button(btn_frame, text="\U0001F4E5 Actualizar ahora", bg="#16c79a", fg="#0f0f23",
+                  font=("Segoe UI", 10, "bold"), relief="flat", padx=14, pady=6,
+                  cursor="hand2", command=do_update).pack(side="left", padx=(0, 8))
+        tk.Button(btn_frame, text="Ahora no", bg="#2a2a4a", fg="#e0e0e0",
+                  font=("Segoe UI", 10), relief="flat", padx=14, pady=6,
+                  cursor="hand2", command=do_cancel).pack(side="left")
+
+        self.root.wait_window(win)
+        return result["update"]
+
+    def _show_changelog(self, changelog, remote_ver):
+        """Show changelog in a read-only window (for non-frozen mode)."""
+        win = tk.Toplevel(self.root)
+        win.title(f"Novedades - v{remote_ver}")
+        win.configure(bg="#1a1a2e")
+        win.geometry("500x400")
+        win.resizable(True, True)
+        win.transient(self.root)
+
+        tk.Label(win, text=f"\U0001F4E2 Novedades en v{remote_ver}", bg="#1a1a2e", fg="#16c79a",
+                 font=("Segoe UI", 14, "bold")).pack(pady=(12, 8))
+
+        text_frame = tk.Frame(win, bg="#0f0f23")
+        text_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        text_widget = tk.Text(text_frame, bg="#0f0f23", fg="#e0e0e0", font=("Consolas", 9),
+                              wrap="word", relief="flat", yscrollcommand=scrollbar.set,
+                              padx=10, pady=10)
+        text_widget.pack(fill="both", expand=True)
+        scrollbar.config(command=text_widget.yview)
+
+        if changelog:
+            text_widget.insert("1.0", changelog)
+        else:
+            text_widget.insert("1.0", "No se pudo obtener el detalle de cambios.")
+        text_widget.config(state="disabled")
+
+        tk.Button(win, text="Cerrar", bg="#2a2a4a", fg="#e0e0e0",
+                  font=("Segoe UI", 10), relief="flat", padx=14, pady=6,
+                  cursor="hand2", command=win.destroy).pack(pady=(0, 12))
 
     def _start_download(self):
         self.update_btn.config(state="disabled", text="Descargando...")
