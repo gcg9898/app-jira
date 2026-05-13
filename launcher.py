@@ -170,16 +170,24 @@ def get_remote_changelog(local_ver, remote_ver, include_current=False):
     import re
     sections = re.split(r'(?=^\[)', content, flags=re.MULTILINE)
     result_lines = []
+    all_sections = []
+    found_local = False
     for section in sections:
         match = re.match(r'\[([a-f0-9]+)\]', section)
         if not match:
             continue
+        all_sections.append(section.strip())
         ver = match.group(1)
         if ver == local_ver:
+            found_local = True
             if include_current:
                 result_lines.append(section.strip())
             break
         result_lines.append(section.strip())
+
+    # If local version not found in changelog, show the latest entry
+    if not result_lines and all_sections:
+        return all_sections[0]
 
     return "\n\n".join(result_lines) if result_lines else None
 
