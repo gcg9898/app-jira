@@ -851,13 +851,6 @@ class LauncherApp:
         tk.Label(header_frame, text=header, bg="#1a1a2e", fg="#16c79a",
                  font=("Segoe UI", 14, "bold")).pack(side="left")
 
-        if is_current:
-            tk.Label(win, text="✅ Ya tienes la última versión instalada", bg="#1a1a2e", fg="#16c79a",
-                     font=("Segoe UI", 9)).pack(anchor="w", padx=16, pady=(0, 6))
-
-        tk.Label(header_frame, text=header, bg="#1a1a2e", fg="#16c79a",
-                 font=("Segoe UI", 14, "bold")).pack(side="left")
-
         result = {"update": False}
 
         def do_update():
@@ -873,6 +866,10 @@ class LauncherApp:
         tk.Button(header_frame, text=update_btn_text, bg="#16c79a", fg="#0f0f23",
                   font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=4,
                   cursor="hand2", command=do_update).pack(side="right")
+
+        if is_current:
+            tk.Label(win, text="✅ Ya tienes la última versión instalada", bg="#1a1a2e", fg="#16c79a",
+                     font=("Segoe UI", 9)).pack(anchor="w", padx=16, pady=(0, 4))
 
         text_frame = tk.Frame(win, bg="#0f0f23")
         text_frame.pack(fill="both", expand=True, padx=16, pady=(0, 12))
