@@ -2,6 +2,12 @@
 JIRABOARD - CHANGELOG
 ═══════════════════════════════════════════════════════════════
 
+[7a3a3f1] 2026-05-13
+─────────────────────
+- Novedades al actualizar: al comprobar actualizaciones se muestra una ventana con los cambios entre tu versión y la nueva
+- Si ya estás en la última versión, muestra las novedades incluidas en tu versión actual
+- CHANGELOG.txt en el repositorio con historial de versiones
+
 [ddb50b0] 2026-05-13
 ─────────────────────
 - Entornos (INT/PRE/PROD): checks en cada incidencia y ticket
