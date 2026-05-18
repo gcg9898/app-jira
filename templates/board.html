@@ -1201,7 +1201,7 @@
                 await fetch(`/api/tasks/${editingTaskId}`, {
                     method: "PUT",
                     headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({ title, description, priority, labels, column_id: currentColumnId, position: 0 })
+                    body: JSON.stringify({ title, description, priority, priority_override: priority, labels, column_id: currentColumnId, position: 0 })
                 });
             } else {
                 await fetch("/api/tasks", {
