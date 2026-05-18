@@ -176,8 +176,15 @@
         .task-card .task-title {
             font-size: 0.9rem;
             font-weight: 600;
-            margin-bottom: 6px;
+            margin-bottom: 4px;
             color: #f0f0f0;
+        }
+        .task-card .task-subtitle {
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: #16c79a;
+            margin-bottom: 6px;
+            font-style: italic;
         }
         .task-card .task-desc {
             font-size: 0.78rem;
@@ -790,6 +797,7 @@
     <div class="modal-overlay" id="taskModal">
         <div class="modal">
             <h3 id="modalTitle">Nueva Tarea</h3>
+            <div id="jiraTitleRef" style="display:none;font-size:0.8rem;color:#7ecbff;margin-bottom:6px;padding:4px 8px;background:#1a1a3e;border-radius:4px;"></div>
             <input type="text" id="taskTitleInput" placeholder="Título de la tarea">
             <textarea id="taskDescInput" placeholder="Descripción (opcional)"></textarea>
             <select id="taskPriorityInput">
@@ -1000,7 +1008,8 @@
                         <button onclick="deleteTask(${task.id})" title="Eliminar">✕</button>
                     </div>
                     ${jiraBadge} ${linkHtml}
-                    <div class="task-title">${escapeHtml(task.title)}</div>
+                    <div class="task-title">${task.jira_key ? escapeHtml(task.title) : escapeHtml(task.custom_title || task.title)}</div>
+                    ${task.jira_key && task.custom_title ? `<div class="task-subtitle">${escapeHtml(task.custom_title)}</div>` : ""}
                     ${task.description ? `<div class="task-desc">${escapeHtml(task.description)}</div>` : ""}
                     <div class="task-meta">
                         <span class="priority-badge ${priorityClass}" onclick="openPriorityDropdown(event, ${task.id})">${task.priority || 'Normal'}</span>
@@ -1146,7 +1155,17 @@
             editingTaskId = taskId;
             currentColumnId = task.column_id;
             document.getElementById("modalTitle").textContent = "Editar Tarea";
-            document.getElementById("taskTitleInput").value = task.title;
+            const jiraRef = document.getElementById("jiraTitleRef");
+            if (task.jira_key) {
+                jiraRef.style.display = "block";
+                jiraRef.textContent = `📌 ${task.jira_key}: ${task.title}`;
+                document.getElementById("taskTitleInput").placeholder = "Tu título personalizado (opcional)";
+                document.getElementById("taskTitleInput").value = task.custom_title || "";
+            } else {
+                jiraRef.style.display = "none";
+                document.getElementById("taskTitleInput").placeholder = "Título de la tarea";
+                document.getElementById("taskTitleInput").value = task.custom_title || task.title;
+            }
             document.getElementById("taskDescInput").value = task.description || "";
             document.getElementById("taskPriorityInput").value = task.priority || "Normal";
             document.getElementById("taskLabelsInput").value = task.labels || "";
@@ -1166,11 +1185,14 @@
 
         function closeModal() {
             document.getElementById("taskModal").classList.remove("active");
+            document.getElementById("jiraTitleRef").style.display = "none";
+            document.getElementById("taskTitleInput").placeholder = "Título de la tarea";
         }
 
         async function saveTask() {
             const title = document.getElementById("taskTitleInput").value.trim();
-            if (!title) return;
+            const isJiraEdit = editingTaskId && boardData.flatMap(c => c.tasks).find(t => t.id === editingTaskId)?.jira_key;
+            if (!title && !isJiraEdit) return;
             const description = document.getElementById("taskDescInput").value.trim();
             const priority = document.getElementById("taskPriorityInput").value;
             const labels = document.getElementById("taskLabelsInput").value.trim();

@@ -202,6 +202,8 @@ def migrate_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN jira_start_date TEXT DEFAULT ''")
     if "jira_oleada" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN jira_oleada TEXT DEFAULT ''")
+    if "custom_title" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN custom_title TEXT DEFAULT ''")
     # Add is_default flag to columns
     col_cols = [row[1] for row in conn.execute("PRAGMA table_info(columns)").fetchall()]
     if "is_default" not in col_cols:
@@ -293,14 +295,14 @@ def api_search():
           FROM tasks t
           JOIN columns c ON t.column_id = c.id
          WHERE COALESCE(t.deleted, 0) = 0
-           AND (t.title LIKE ? OR t.description LIKE ?
+           AND (t.title LIKE ? OR t.custom_title LIKE ? OR t.description LIKE ?
             OR t.jira_key LIKE ? OR t.labels LIKE ?
             OR t.last_comment LIKE ? OR t.jira_status LIKE ?
             OR t.id IN (
                 SELECT tk.task_id FROM tickets tk WHERE tk.title LIKE ?
             ))
          ORDER BY t.updated_at DESC
-    """, (pattern, pattern, pattern, pattern, pattern, pattern, pattern)).fetchall()
+    """, (pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)).fetchall()
     result = []
     for t in tasks:
         td = dict(t)
@@ -714,9 +716,9 @@ def update_task(task_id):
     conn = get_db()
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
     conn.execute(
-        """UPDATE tasks SET title=?, description=?, priority=?, priority_override=?, labels=?, column_id=?, position=?, updated_at=?
+        """UPDATE tasks SET custom_title=?, description=?, priority=?, priority_override=?, labels=?, column_id=?, position=?, updated_at=?
            WHERE id=?""",
-        (data.get("title"), data.get("description", ""), data.get("priority", "Normal"),
+        (data.get("title", ""), data.get("description", ""), data.get("priority", "Normal"),
          data.get("priority_override", ""), data.get("labels", ""), data.get("column_id"), data.get("position", 0), now, task_id)
     )
     conn.commit()
@@ -801,9 +803,9 @@ def api_deleted():
             SELECT t.*, c.name as column_name FROM tasks t
             LEFT JOIN columns c ON t.column_id = c.id
             WHERE t.deleted = 1
-              AND (t.title LIKE ? OR t.description LIKE ? OR t.jira_key LIKE ? OR t.labels LIKE ?)
+              AND (t.title LIKE ? OR t.custom_title LIKE ? OR t.description LIKE ? OR t.jira_key LIKE ? OR t.labels LIKE ?)
             ORDER BY t.updated_at DESC
-        """, (pattern, pattern, pattern, pattern)).fetchall()
+        """, (pattern, pattern, pattern, pattern, pattern)).fetchall()
     else:
         tasks = conn.execute("""
             SELECT t.*, c.name as column_name FROM tasks t
@@ -815,9 +817,9 @@ def api_deleted():
     result = [dict(t) for t in tasks]
     # Sort
     if sort_by == "title":
-        result.sort(key=lambda t: (t.get("title") or "").lower())
+        result.sort(key=lambda t: (t.get("custom_title") or t.get("title") or "").lower())
     elif sort_by == "title_desc":
-        result.sort(key=lambda t: (t.get("title") or "").lower(), reverse=True)
+        result.sort(key=lambda t: (t.get("custom_title") or t.get("title") or "").lower(), reverse=True)
     elif sort_by == "created":
         result.sort(key=lambda t: t.get("created_at") or "", reverse=True)
     elif sort_by == "created_asc":

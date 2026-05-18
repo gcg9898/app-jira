@@ -376,7 +376,7 @@
             return `
                 <div class="task-card">
                     ${jiraBadge} ${columnBadge}
-                    <div class="task-title">${highlight(task.title, query)}</div>
+                    <div class="task-title">${highlight(task.custom_title || task.title, query)}</div>
                     ${task.description ? `<div class="task-desc">${highlight(task.description.substring(0, 200), query)}</div>` : ""}
                     <div class="task-meta">
                         <span class="priority-badge ${priorityClass}">${escapeHtml(task.priority || 'Normal')}</span>
