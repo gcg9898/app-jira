@@ -28,8 +28,16 @@ except Exception:
         pass
 
 API_URL = "http://localhost:5000"
-DB_PATH = Path(__file__).parent / "board.db"
-SCREENSHOTS_DIR = Path(__file__).parent / "screenshots"
+
+# Resolve data directory: when frozen (PyInstaller), use exe's directory, not _MEIPASS
+if getattr(sys, 'frozen', False):
+    _env_data = os.environ.get("JIRABOARD_DATA_DIR")
+    _DATA_DIR = Path(_env_data) if _env_data else Path(sys.executable).parent
+else:
+    _DATA_DIR = Path(__file__).parent
+
+DB_PATH = _DATA_DIR / "board.db"
+SCREENSHOTS_DIR = _DATA_DIR / "screenshots"
 SCREENSHOTS_DIR.mkdir(exist_ok=True)
 
 
