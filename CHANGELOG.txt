@@ -5,7 +5,7 @@ JIRABOARD - CHANGELOG
 ⚠️  ACTUALIZACIÓN IMPORTANTE — Si no actualizas, las screenshots
     y las columnas en "Nueva Tarea" no funcionarán correctamente.
 
-[fix-tray] 2026-05-22
+[f1c7a31] 2026-05-22
 ─────────────────────
 - CORRECCIÓN CRÍTICA: las screenshots ahora se guardan correctamente
 - CORRECCIÓN CRÍTICA: al crear una tarea aparecen todas las columnas disponibles
