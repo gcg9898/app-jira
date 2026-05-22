@@ -172,7 +172,7 @@ def get_remote_changelog(local_ver, remote_ver, include_current=False):
     sections = re.split(r'(?=^\[)', content, flags=re.MULTILINE)
     parsed = []
     for section in sections:
-        match = re.match(r'\[([a-f0-9]+)\]', section)
+        match = re.match(r'\[([a-zA-Z0-9_-]+)\]', section)
         if match:
             parsed.append((match.group(1), section.strip()))
 
