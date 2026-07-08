@@ -960,79 +960,11 @@
                 board.appendChild(colEl);
             });
 
-            // Virtual read-only column: all tasks sorted by last-update desc
-            renderRecentColumn(board);
-
             // Add column button
             const addCol = document.createElement("div");
             addCol.className = "add-column";
             addCol.innerHTML = `<button class="add-column-btn" onclick="addColumn()">+ Nueva columna</button>`;
             board.appendChild(addCol);
-        }
-
-        function renderRecentColumn(board) {
-            // Collect every task from every column (skip deleted)
-            const seen = new Set();
-            let all = [];
-            boardData.forEach(c => c.tasks.forEach(t => {
-                if (t.deleted) return;
-                if (seen.has(t.id)) return;
-                seen.add(t.id);
-                all.push(t);
-            }));
-
-            // Respect global label filter
-            if (activeFilter) {
-                all = all.filter(t => t.labels && t.labels.toLowerCase().includes(activeFilter.toLowerCase()));
-            }
-
-            // Sort by jira_updated desc, fall back to updated_at
-            all.sort((a, b) => {
-                const db = parseJiraDate(b.jira_updated) || parseJiraDate(b.updated_at) || 0;
-                const da = parseJiraDate(a.jira_updated) || parseJiraDate(a.updated_at) || 0;
-                return db - da;
-            });
-
-            // Column-id -> name for the little tag on each item
-            const colName = {};
-            boardData.forEach(c => { colName[c.id] = c.name; });
-
-            const itemsHtml = all.map(t => {
-                const key = t.jira_key || "";
-                const title = t.jira_key
-                    ? escapeHtml(t.title || "")
-                    : escapeHtml(t.custom_title || t.title || "");
-                const desc = escapeHtml(extractIssueDescription(t.description));
-                const dateStr = t.jira_updated || t.updated_at || "";
-                const badge = key
-                    ? `<a class="jira-badge" href="https://jiraitsm.eulen.com/browse/${key}" target="_blank">${key}</a>`
-                    : `<span class="jira-badge" style="background:#666;">manual</span>`;
-                const col = colName[t.column_id] ? `<span class="recent-item-col">${escapeHtml(colName[t.column_id])}</span>` : "";
-                return `
-                    <div class="recent-item">
-                        <div class="recent-item-head">
-                            ${badge}
-                            <span class="recent-item-date">🕐 ${escapeHtml(dateStr)}</span>
-                        </div>
-                        <div class="recent-item-title">${title}</div>
-                        ${desc ? `<div class="recent-item-desc">${desc}</div>` : ""}
-                        ${col}
-                    </div>
-                `;
-            }).join("");
-
-            const colEl = document.createElement("div");
-            colEl.className = "column column-recent";
-            colEl.innerHTML = `
-                <div class="column-header">
-                    <h2>🕐 Últimas actualizadas</h2>
-                    <span class="column-count">${all.length}</span>
-                </div>
-                <div class="column-tasks-recent">
-                    ${itemsHtml || '<div style="color:#666;text-align:center;padding:20px;font-size:0.8rem;">Sin incidencias</div>'}
-                </div>
-            `;
-            board.appendChild(colEl);
         }
 
         function renderTaskCard(task) {

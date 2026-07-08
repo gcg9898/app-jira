@@ -283,6 +283,11 @@ def search_page():
     return render_template("search.html")
 
 
+@app.route("/recent")
+def recent_page():
+    return render_template("recent.html")
+
+
 @app.route("/api/search")
 def api_search():
     q = request.args.get("q", "").strip()
