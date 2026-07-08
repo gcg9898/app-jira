@@ -741,6 +741,7 @@
         <div class="header-actions">
             <button class="btn btn-sync" id="syncBtn" onclick="syncJira()">🔄 Sync Jira</button>
             <a href="/search" class="btn btn-secondary" style="text-decoration:none;">🔍 Buscar</a>
+            <a href="/recent" class="btn btn-secondary" style="text-decoration:none;">🕐 Recientes</a>
             <a href="/deleted" class="btn btn-secondary" style="text-decoration:none;">🗑️ Papelera</a>
             <select class="btn btn-secondary" id="sortSelect" onchange="changeSort(this.value)" style="cursor:pointer;">
                 <option value="priority">📊 Prioridad (mayor a menor)</option>
@@ -893,6 +894,19 @@
             renderBoard();
         }
 
+        // Extract the actual issue description from Jira's structured description.
+        // Jira templates prepend metadata (Usuario/Impactados/Subproceso/...) and then
+        // "Descripción de la incidencia: <real text>". If that marker is present,
+        // return only the text after it. Otherwise return the original description.
+        function extractIssueDescription(desc) {
+            if (!desc) return "";
+            const m = desc.match(/descripci[oó]n\s+de\s+la\s+incidencia\s*:?\s*/i);
+            if (m) {
+                return desc.substring(m.index + m[0].length).trim();
+            }
+            return desc;
+        }
+
         function renderBoard() {
             const board = document.getElementById("board");
             board.innerHTML = "";
@@ -946,11 +960,79 @@
                 board.appendChild(colEl);
             });
 
+            // Virtual read-only column: all tasks sorted by last-update desc
+            renderRecentColumn(board);
+
             // Add column button
             const addCol = document.createElement("div");
             addCol.className = "add-column";
             addCol.innerHTML = `<button class="add-column-btn" onclick="addColumn()">+ Nueva columna</button>`;
             board.appendChild(addCol);
+        }
+
+        function renderRecentColumn(board) {
+            // Collect every task from every column (skip deleted)
+            const seen = new Set();
+            let all = [];
+            boardData.forEach(c => c.tasks.forEach(t => {
+                if (t.deleted) return;
+                if (seen.has(t.id)) return;
+                seen.add(t.id);
+                all.push(t);
+            }));
+
+            // Respect global label filter
+            if (activeFilter) {
+                all = all.filter(t => t.labels && t.labels.toLowerCase().includes(activeFilter.toLowerCase()));
+            }
+
+            // Sort by jira_updated desc, fall back to updated_at
+            all.sort((a, b) => {
+                const db = parseJiraDate(b.jira_updated) || parseJiraDate(b.updated_at) || 0;
+                const da = parseJiraDate(a.jira_updated) || parseJiraDate(a.updated_at) || 0;
+                return db - da;
+            });
+
+            // Column-id -> name for the little tag on each item
+            const colName = {};
+            boardData.forEach(c => { colName[c.id] = c.name; });
+
+            const itemsHtml = all.map(t => {
+                const key = t.jira_key || "";
+                const title = t.jira_key
+                    ? escapeHtml(t.title || "")
+                    : escapeHtml(t.custom_title || t.title || "");
+                const desc = escapeHtml(extractIssueDescription(t.description));
+                const dateStr = t.jira_updated || t.updated_at || "";
+                const badge = key
+                    ? `<a class="jira-badge" href="https://jiraitsm.eulen.com/browse/${key}" target="_blank">${key}</a>`
+                    : `<span class="jira-badge" style="background:#666;">manual</span>`;
+                const col = colName[t.column_id] ? `<span class="recent-item-col">${escapeHtml(colName[t.column_id])}</span>` : "";
+                return `
+                    <div class="recent-item">
+                        <div class="recent-item-head">
+                            ${badge}
+                            <span class="recent-item-date">🕐 ${escapeHtml(dateStr)}</span>
+                        </div>
+                        <div class="recent-item-title">${title}</div>
+                        ${desc ? `<div class="recent-item-desc">${desc}</div>` : ""}
+                        ${col}
+                    </div>
+                `;
+            }).join("");
+
+            const colEl = document.createElement("div");
+            colEl.className = "column column-recent";
+            colEl.innerHTML = `
+                <div class="column-header">
+                    <h2>🕐 Últimas actualizadas</h2>
+                    <span class="column-count">${all.length}</span>
+                </div>
+                <div class="column-tasks-recent">
+                    ${itemsHtml || '<div style="color:#666;text-align:center;padding:20px;font-size:0.8rem;">Sin incidencias</div>'}
+                </div>
+            `;
+            board.appendChild(colEl);
         }
 
         function renderTaskCard(task) {
@@ -973,6 +1055,7 @@
             const linkHtml = task.link ? `<a href="${escapeHtml(linkUrl)}" target="_blank" style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>` : "";
             const lastComment = task.last_comment ? `<div class="last-comment">${escapeHtml(task.last_comment.substring(0, 100))}</div>` : "";
             const jiraUpdatedHtml = task.jira_updated ? `<div style="font-size:0.7rem;color:#666;margin-top:4px;">🕐 Última actualización: ${escapeHtml(task.jira_updated)}</div>` : "";
+            const cleanDescription = extractIssueDescription(task.description);
             const screenshotTs = Date.now();
             const screenshotHtml = task.screenshot ? `
                 <div class="task-screenshot" onclick="event.stopPropagation(); openLightbox('/screenshots/${encodeURIComponent(task.screenshot)}?t=${screenshotTs}')" draggable="false">
@@ -1010,7 +1093,7 @@
                     ${jiraBadge} ${linkHtml}
                     <div class="task-title">${task.jira_key ? escapeHtml(task.title) : escapeHtml(task.custom_title || task.title)}</div>
                     ${task.jira_key && task.custom_title ? `<div class="task-subtitle">${escapeHtml(task.custom_title)}</div>` : ""}
-                    ${task.description ? `<div class="task-desc">${escapeHtml(task.description)}</div>` : ""}
+                    ${cleanDescription ? `<div class="task-desc">${escapeHtml(cleanDescription)}</div>` : ""}
                     <div class="task-meta">
                         <span class="priority-badge ${priorityClass}" onclick="openPriorityDropdown(event, ${task.id})">${task.priority || 'Normal'}</span>
                         ${task.priority_override ? `<button onclick="resetPriority(event, ${task.id})" title="Has cambiado la prioridad manualmente. Pulsa para volver a la prioridad original de Jira (${escapeHtml(task.priority)})" style="background:none;border:none;color:#888;cursor:pointer;font-size:0.7rem;padding:0 2px;">↩</button>` : ""}
