@@ -93,6 +93,154 @@ def get_db_stats():
         return {"tasks": 0, "jira": 0, "manual": 0, "columns": 0}
 
 
+# ═══════════════════════════════════════════════════════════════
+# CONFIGURACION MULTI-JIRA (tablas jira_instances / jira_filters)
+#
+# La config vive en board.db, no en el .env. El launcher la lee y escribe
+# directamente por sqlite3 para poder gestionarla aunque Flask no esté
+# levantado. Flask crea las tablas al arrancar (migrate_db).
+# ═══════════════════════════════════════════════════════════════
+def jira_db():
+    conn = sqlite3.connect(str(DB_PATH), timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def jira_tables_ready():
+    """Las tablas las crea Flask al arrancar. Si aún no existen, avisamos."""
+    try:
+        conn = jira_db()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('jira_instances','jira_filters')"
+        ).fetchone()[0]
+        conn.close()
+        return row == 2
+    except Exception:
+        return False
+
+
+def list_instances():
+    """[(instancia, [filtros])] ordenadas por posición."""
+    try:
+        conn = jira_db()
+        result = []
+        for inst in conn.execute("SELECT * FROM jira_instances ORDER BY position, id").fetchall():
+            filters = conn.execute(
+                "SELECT * FROM jira_filters WHERE instance_id = ? ORDER BY position, id", (inst["id"],)
+            ).fetchall()
+            result.append((dict(inst), [dict(f) for f in filters]))
+        conn.close()
+        return result
+    except Exception:
+        return []
+
+
+def jira_counts():
+    """(nº instancias activas, nº filtros activos) para el resumen del panel."""
+    try:
+        conn = jira_db()
+        i = conn.execute("SELECT COUNT(*) FROM jira_instances WHERE enabled = 1").fetchone()[0]
+        f = conn.execute(
+            """SELECT COUNT(*) FROM jira_filters f, jira_instances i
+                WHERE f.instance_id = i.id AND f.enabled = 1 AND i.enabled = 1"""
+        ).fetchone()[0]
+        conn.close()
+        return i, f
+    except Exception:
+        return 0, 0
+
+
+def save_instance(inst_id, name, base_url, username, password, enabled):
+    """Crea o actualiza. password None = no tocar la guardada."""
+    conn = jira_db()
+    try:
+        if inst_id:
+            if password is None:
+                conn.execute(
+                    "UPDATE jira_instances SET name=?, base_url=?, username=?, enabled=? WHERE id=?",
+                    (name, base_url, username, 1 if enabled else 0, inst_id))
+            else:
+                conn.execute(
+                    "UPDATE jira_instances SET name=?, base_url=?, username=?, password=?, enabled=? WHERE id=?",
+                    (name, base_url, username, password, 1 if enabled else 0, inst_id))
+            new_id = inst_id
+        else:
+            n = conn.execute("SELECT COUNT(*) FROM jira_instances").fetchone()[0]
+            colors = ["#4A90D9", "#E5A33D", "#7BC67B", "#C97BD9", "#D96B6B",
+                      "#5FBFC4", "#B0A16B", "#8E8ED9"]
+            conn.execute(
+                """INSERT INTO jira_instances (name, base_url, username, password, color, enabled, position)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (name, base_url, username, password or "", colors[n % len(colors)],
+                 1 if enabled else 0, n))
+            new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+        return new_id, None
+    except sqlite3.IntegrityError:
+        return None, f"Ya existe una instancia llamada '{name}'"
+    finally:
+        conn.close()
+
+
+def delete_instance_db(inst_id):
+    conn = jira_db()
+    conn.execute("UPDATE tasks SET jira_instance_id = NULL, jira_filter_id = NULL WHERE jira_instance_id = ?",
+                 (inst_id,))
+    conn.execute("DELETE FROM jira_filters WHERE instance_id = ?", (inst_id,))
+    conn.execute("DELETE FROM jira_instances WHERE id = ?", (inst_id,))
+    conn.commit()
+    conn.close()
+
+
+def save_filter(filt_id, instance_id, name, filter_id, jql, enabled):
+    conn = jira_db()
+    if filt_id:
+        conn.execute("UPDATE jira_filters SET name=?, filter_id=?, jql=?, enabled=? WHERE id=?",
+                     (name, filter_id, jql, 1 if enabled else 0, filt_id))
+    else:
+        n = conn.execute("SELECT COUNT(*) FROM jira_filters WHERE instance_id = ?",
+                         (instance_id,)).fetchone()[0]
+        conn.execute(
+            """INSERT INTO jira_filters (instance_id, name, filter_id, jql, enabled, position)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (instance_id, name, filter_id, jql, 1 if enabled else 0, n))
+    conn.commit()
+    conn.close()
+
+
+def delete_filter_db(filt_id):
+    conn = jira_db()
+    conn.execute("UPDATE tasks SET jira_filter_id = NULL WHERE jira_filter_id = ?", (filt_id,))
+    conn.execute("DELETE FROM jira_filters WHERE id = ?", (filt_id,))
+    conn.commit()
+    conn.close()
+
+
+def test_instance_conn(base_url, username, password):
+    """Valida credenciales contra /rest/api/2/myself. Devuelve (ok, mensaje)."""
+    import base64
+    import json as _json
+    import ssl
+    url = base_url.rstrip("/") + "/rest/api/2/myself"
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    req = Request(url, headers={"Authorization": f"Basic {token}"})
+    # Los Jira internos suelen tener certificado autofirmado
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urlopen(req, timeout=15, context=ctx) as r:
+            data = _json.loads(r.read().decode("utf-8", "replace"))
+            who = data.get("displayName") or data.get("name") or username
+            return True, f"Conectado como {who}"
+    except HTTPError as e:
+        if e.code in (401, 403):
+            return False, "Usuario o contraseña incorrectos"
+        return False, f"Error HTTP {e.code}"
+    except Exception as e:
+        return False, str(e)
+
+
 def check_flask():
     try:
         urlopen("http://127.0.0.1:5000/api/columns", timeout=1)
@@ -449,6 +597,329 @@ del "%~f0"
     os._exit(0)
 
 
+# ═══════════════════════════════════════════════════════════════
+# DIALOGO DE GESTION DE JIRAS Y FILTROS
+# ═══════════════════════════════════════════════════════════════
+BG = "#0f0f23"
+BG2 = "#1a1a2e"
+FG = "#e0e0e0"
+FG_DIM = "#ccc"
+ACCENT = "#16c79a"
+BORDER = "#2a2a4a"
+
+
+def _entry(parent, width=34, show=None):
+    return tk.Entry(parent, bg=BG, fg=FG, insertbackground=ACCENT,
+                    font=("Segoe UI", 9), relief="flat", highlightthickness=1,
+                    highlightcolor=ACCENT, highlightbackground=BORDER,
+                    width=width, show=show)
+
+
+def _btn(parent, text, cmd, bg=BORDER, fg=FG, width=None):
+    return tk.Button(parent, text=text, bg=bg, fg=fg, font=("Segoe UI", 9),
+                     relief="flat", padx=10, pady=3, cursor="hand2",
+                     command=cmd, width=width)
+
+
+class JiraManagerDialog(tk.Toplevel):
+    """Gestor de instancias de Jira y sus filtros.
+
+    Escribe directamente en board.db para poder usarse aunque Flask esté parado.
+    El árbol de la izquierda muestra instancias con sus filtros colgando; el
+    panel de la derecha cambia según lo seleccionado.
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Jiras y filtros")
+        self.configure(bg=BG2)
+        self.geometry("860x520")
+        self.transient(parent)
+        self.grab_set()
+
+        self.sel_kind = None      # 'instance' | 'filter'
+        self.sel_id = None
+        self.instances = []
+
+        if not jira_tables_ready():
+            tk.Label(self, text="Las tablas de configuración todavía no existen.\n\n"
+                                "Arranca la aplicación una vez (botón «Iniciar») para que\n"
+                                "se creen y vuelve a abrir esta ventana.",
+                     bg=BG2, fg="#f5a623", font=("Segoe UI", 10), justify="left").pack(padx=30, pady=40)
+            _btn(self, "Cerrar", self.destroy).pack(pady=(0, 20))
+            return
+
+        body = tk.Frame(self, bg=BG2)
+        body.pack(fill="both", expand=True, padx=14, pady=14)
+
+        # ── Izquierda: árbol instancias → filtros ──
+        left = tk.Frame(body, bg=BG2)
+        left.pack(side="left", fill="both", expand=True)
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Jira.Treeview", background=BG, fieldbackground=BG,
+                        foreground=FG, borderwidth=0, rowheight=24)
+        style.map("Jira.Treeview", background=[("selected", BORDER)])
+
+        self.tree = ttk.Treeview(left, style="Jira.Treeview", show="tree", selectmode="browse")
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
+        sb.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.bind("<<TreeviewSelect>>", self.on_select)
+
+        # ── Derecha: detalle del elemento seleccionado ──
+        self.right = tk.Frame(body, bg=BG, padx=14, pady=14,
+                              highlightbackground=BORDER, highlightthickness=1)
+        self.right.pack(side="left", fill="both", padx=(14, 0))
+
+        # ── Botonera inferior ──
+        bar = tk.Frame(self, bg=BG2)
+        bar.pack(fill="x", padx=14, pady=(0, 14))
+        _btn(bar, "+ Jira", self.new_instance, bg=ACCENT, fg=BG).pack(side="left")
+        _btn(bar, "+ Filtro", self.new_filter).pack(side="left", padx=(6, 0))
+        _btn(bar, "Eliminar", self.delete_selected, bg="#6b2020").pack(side="left", padx=(6, 0))
+        _btn(bar, "Probar conexión", self.test_selected).pack(side="left", padx=(6, 0))
+        _btn(bar, "Cerrar", self.destroy).pack(side="right")
+
+        self.status = tk.Label(self, text="", bg=BG2, fg="#888", font=("Segoe UI", 8), anchor="w")
+        self.status.pack(fill="x", padx=16, pady=(0, 8))
+
+        self.reload()
+
+    # ── Datos ──
+    def reload(self, keep=None):
+        self.instances = list_instances()
+        self.tree.delete(*self.tree.get_children())
+        for inst, filters in self.instances:
+            mark = "" if inst["enabled"] else "  (desactivada)"
+            node = self.tree.insert("", "end", iid=f"i{inst['id']}",
+                                    text=f"  {inst['name']}{mark}", open=True)
+            for f in filters:
+                tick = "✓" if f["enabled"] else "✗"
+                ref = f"filter={f['filter_id']}" if f["filter_id"] else (f["jql"] or "")
+                self.tree.insert(node, "end", iid=f"f{f['id']}",
+                                 text=f"     {tick}  {f['name']}   ({ref[:40]})")
+        target = keep if keep and self.tree.exists(keep) else (
+            self.tree.get_children()[0] if self.tree.get_children() else None)
+        if target:
+            self.tree.selection_set(target)
+            self.tree.focus(target)
+        else:
+            self.show_empty()
+
+    def find_instance(self, inst_id):
+        for inst, filters in self.instances:
+            if inst["id"] == inst_id:
+                return inst, filters
+        return None, []
+
+    def find_filter(self, filt_id):
+        for inst, filters in self.instances:
+            for f in filters:
+                if f["id"] == filt_id:
+                    return f, inst
+        return None, None
+
+    # ── Panel derecho ──
+    def clear_right(self):
+        for w in self.right.winfo_children():
+            w.destroy()
+
+    def show_empty(self):
+        self.clear_right()
+        self.sel_kind = self.sel_id = None
+        tk.Label(self.right, text="No hay ningún Jira configurado.\n\nPulsa «+ Jira» para añadir el primero.",
+                 bg=BG, fg="#888", font=("Segoe UI", 9), justify="left").pack(anchor="w")
+
+    def on_select(self, _evt=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if iid.startswith("i"):
+            self.show_instance(int(iid[1:]))
+        else:
+            self.show_filter(int(iid[1:]))
+
+    def show_instance(self, inst_id, blank=False):
+        self.clear_right()
+        self.sel_kind, self.sel_id = "instance", (None if blank else inst_id)
+        inst = {} if blank else self.find_instance(inst_id)[0] or {}
+
+        tk.Label(self.right, text="Nuevo Jira" if blank else "Instancia de Jira",
+                 bg=BG, fg=FG, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=2,
+                                                                   sticky="w", pady=(0, 10))
+        rows = [("Nombre:", "name", ""), ("URL:", "base_url", ""), ("Usuario:", "username", "")]
+        self.i_fields = {}
+        for r, (label, key, _d) in enumerate(rows, start=1):
+            tk.Label(self.right, text=label, bg=BG, fg=FG_DIM,
+                     font=("Segoe UI", 9)).grid(row=r, column=0, sticky="w", pady=3)
+            e = _entry(self.right)
+            e.grid(row=r, column=1, sticky="w", padx=(8, 0), pady=3)
+            e.insert(0, inst.get(key, "") or "")
+            self.i_fields[key] = e
+
+        tk.Label(self.right, text="Contraseña:", bg=BG, fg=FG_DIM,
+                 font=("Segoe UI", 9)).grid(row=4, column=0, sticky="w", pady=3)
+        self.i_pass = _entry(self.right, show="*")
+        self.i_pass.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=3)
+        if not blank:
+            tk.Label(self.right, text="(vacío = no cambiar la guardada)", bg=BG, fg="#666",
+                     font=("Segoe UI", 8)).grid(row=5, column=1, sticky="w", padx=(8, 0))
+
+        self.i_enabled = tk.BooleanVar(value=bool(inst.get("enabled", 1)))
+        tk.Checkbutton(self.right, text="Activa (se sincroniza)", variable=self.i_enabled,
+                       bg=BG, fg=FG_DIM, selectcolor=BG, activebackground=BG,
+                       activeforeground=FG, font=("Segoe UI", 9),
+                       highlightthickness=0, borderwidth=0).grid(row=6, column=0, columnspan=2,
+                                                                 sticky="w", pady=(8, 0))
+        _btn(self.right, "Guardar", self.save_instance_ui, bg=ACCENT, fg=BG).grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+    def show_filter(self, filt_id, blank=False, instance_id=None):
+        self.clear_right()
+        self.sel_kind, self.sel_id = "filter", (None if blank else filt_id)
+        self.filter_instance_id = instance_id
+        f = {} if blank else self.find_filter(filt_id)[0] or {}
+        if not blank:
+            self.filter_instance_id = f.get("instance_id")
+
+        tk.Label(self.right, text="Nuevo filtro" if blank else "Filtro",
+                 bg=BG, fg=FG, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=2,
+                                                                   sticky="w", pady=(0, 10))
+        tk.Label(self.right, text="Nombre:", bg=BG, fg=FG_DIM,
+                 font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", pady=3)
+        self.f_name = _entry(self.right)
+        self.f_name.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=3)
+        self.f_name.insert(0, f.get("name", "") or "")
+
+        tk.Label(self.right, text="ID filtro:", bg=BG, fg=FG_DIM,
+                 font=("Segoe UI", 9)).grid(row=2, column=0, sticky="w", pady=3)
+        self.f_id = _entry(self.right, width=14)
+        self.f_id.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=3)
+        self.f_id.insert(0, f.get("filter_id", "") or "")
+
+        tk.Label(self.right, text="o JQL:", bg=BG, fg=FG_DIM,
+                 font=("Segoe UI", 9)).grid(row=3, column=0, sticky="w", pady=3)
+        self.f_jql = _entry(self.right)
+        self.f_jql.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=3)
+        self.f_jql.insert(0, f.get("jql", "") or "")
+
+        tk.Label(self.right, text="Rellena el ID (ej. 30004) o una JQL, no ambos.\nSi pones los dos, manda el ID.",
+                 bg=BG, fg="#666", font=("Segoe UI", 8), justify="left").grid(
+            row=4, column=1, sticky="w", padx=(8, 0), pady=(2, 0))
+
+        self.f_enabled = tk.BooleanVar(value=bool(f.get("enabled", 1)))
+        tk.Checkbutton(self.right, text="Activo (se sincroniza)", variable=self.f_enabled,
+                       bg=BG, fg=FG_DIM, selectcolor=BG, activebackground=BG,
+                       activeforeground=FG, font=("Segoe UI", 9),
+                       highlightthickness=0, borderwidth=0).grid(row=5, column=0, columnspan=2,
+                                                                 sticky="w", pady=(8, 0))
+        _btn(self.right, "Guardar", self.save_filter_ui, bg=ACCENT, fg=BG).grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+    # ── Acciones ──
+    def new_instance(self):
+        self.show_instance(None, blank=True)
+
+    def new_filter(self):
+        inst_id = self.current_instance_id()
+        if not inst_id:
+            messagebox.showwarning("Filtro", "Selecciona primero un Jira en la lista.", parent=self)
+            return
+        self.show_filter(None, blank=True, instance_id=inst_id)
+
+    def current_instance_id(self):
+        """Instancia asociada a la selección actual (sea instancia o filtro)."""
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        iid = sel[0]
+        if iid.startswith("i"):
+            return int(iid[1:])
+        f, _inst = self.find_filter(int(iid[1:]))
+        return f["instance_id"] if f else None
+
+    def save_instance_ui(self):
+        name = self.i_fields["name"].get().strip()
+        url = self.i_fields["base_url"].get().strip().rstrip("/")
+        user = self.i_fields["username"].get().strip()
+        pwd = self.i_pass.get()
+        if not name or not url:
+            messagebox.showwarning("Guardar", "Nombre y URL son obligatorios.", parent=self)
+            return
+        # En alta la contraseña va tal cual; en edición, vacío = conservar
+        password = pwd if (self.sel_id is None or pwd != "") else None
+        new_id, err = save_instance(self.sel_id, name, url, user, password, self.i_enabled.get())
+        if err:
+            messagebox.showerror("Guardar", err, parent=self)
+            return
+        self.status.config(text=f"Guardado: {name}", fg=ACCENT)
+        self.reload(keep=f"i{new_id}")
+
+    def save_filter_ui(self):
+        fid = self.f_id.get().strip()
+        jql = self.f_jql.get().strip()
+        if not fid and not jql:
+            messagebox.showwarning("Guardar", "Indica el ID del filtro o una JQL.", parent=self)
+            return
+        if fid and not fid.isdigit():
+            messagebox.showwarning("Guardar", "El ID del filtro debe ser numérico.\n"
+                                              "Si querías una JQL, ponla en el campo de abajo.", parent=self)
+            return
+        if fid:
+            jql = ""
+        name = self.f_name.get().strip() or (f"Filtro {fid}" if fid else "JQL")
+        save_filter(self.sel_id, self.filter_instance_id, name, fid, jql, self.f_enabled.get())
+        self.status.config(text=f"Guardado: {name}", fg=ACCENT)
+        self.reload(keep=f"i{self.filter_instance_id}")
+
+    def delete_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if iid.startswith("i"):
+            inst, _f = self.find_instance(int(iid[1:]))
+            if not inst:
+                return
+            if not messagebox.askyesno(
+                    "Eliminar",
+                    f"¿Eliminar el Jira «{inst['name']}» y todos sus filtros?\n\n"
+                    "Las tarjetas ya importadas se conservan, pero dejarán de\n"
+                    "sincronizarse y perderán el enlace a Jira.", parent=self):
+                return
+            delete_instance_db(inst["id"])
+        else:
+            f, _i = self.find_filter(int(iid[1:]))
+            if not f:
+                return
+            if not messagebox.askyesno("Eliminar", f"¿Eliminar el filtro «{f['name']}»?", parent=self):
+                return
+            delete_filter_db(f["id"])
+        self.status.config(text="Eliminado", fg="#888")
+        self.reload()
+
+    def test_selected(self):
+        inst_id = self.current_instance_id()
+        if not inst_id:
+            messagebox.showwarning("Probar", "Selecciona un Jira en la lista.", parent=self)
+            return
+        inst, _f = self.find_instance(inst_id)
+        if not inst:
+            return
+        self.status.config(text=f"Probando {inst['name']}...", fg="#888")
+        self.update_idletasks()
+
+        def run():
+            ok, msg = test_instance_conn(inst["base_url"], inst["username"], inst["password"])
+            self.status.config(text=msg, fg=ACCENT if ok else "#D96B6B")
+
+        threading.Thread(target=run, daemon=True).start()
+
+
 class LauncherApp:
     def __init__(self):
         self.root = tk.Tk()
@@ -579,59 +1050,30 @@ class LauncherApp:
                                 font=("Segoe UI", 9, "bold"))
         self.db_cols.grid(row=4, column=1, sticky="w", padx=(8, 0))
 
-        # Credentials frame
+        # Jira config frame — instancias y filtros (config real en board.db)
         cred_frame = tk.Frame(root, bg="#0f0f23", padx=16, pady=12,
                               highlightbackground="#2a2a4a", highlightthickness=1)
         cred_frame.pack(fill="x", padx=20, pady=(0, 12))
 
-        tk.Label(cred_frame, text="Credenciales Jira", bg="#0f0f23", fg="#e0e0e0",
+        tk.Label(cred_frame, text="Jiras y filtros", bg="#0f0f23", fg="#e0e0e0",
                  font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
-        env_data = load_env()
-
-        tk.Label(cred_frame, text="Usuario:", bg="#0f0f23", fg="#ccc",
+        tk.Label(cred_frame, text="Configurados:", bg="#0f0f23", fg="#ccc",
                  font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w")
-        self.user_entry = tk.Entry(cred_frame, bg="#0f0f23", fg="#e0e0e0", insertbackground="#16c79a",
-                                   font=("Segoe UI", 9), relief="flat", highlightthickness=1,
-                                   highlightcolor="#16c79a", highlightbackground="#2a2a4a", width=30)
-        self.user_entry.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=2)
-        self.user_entry.insert(0, env_data.get("JIRA_USER", ""))
+        self.jira_summary = tk.Label(cred_frame, text="...", bg="#0f0f23", fg="#4A90D9",
+                                     font=("Segoe UI", 9, "bold"))
+        self.jira_summary.grid(row=1, column=1, sticky="w", padx=(8, 0))
 
-        tk.Label(cred_frame, text="Password:", bg="#0f0f23", fg="#ccc",
-                 font=("Segoe UI", 9)).grid(row=2, column=0, sticky="w")
-        self.pass_entry = tk.Entry(cred_frame, bg="#0f0f23", fg="#e0e0e0", insertbackground="#16c79a",
-                                   font=("Segoe UI", 9), relief="flat", highlightthickness=1,
-                                   highlightcolor="#16c79a", highlightbackground="#2a2a4a", width=30,
-                                   show="*")
-        self.pass_entry.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=2)
-        self.pass_entry.insert(0, env_data.get("JIRA_PASS", ""))
+        self.jira_detail = tk.Label(cred_frame, text="", bg="#0f0f23", fg="#888",
+                                    font=("Segoe UI", 8), justify="left", anchor="w")
+        self.jira_detail.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
-        self.pass_visible = False
-        self.eye_btn = tk.Button(cred_frame, text="\U0001F441", bg="#0f0f23", fg="#888",
-                                 font=("Segoe UI", 10), relief="flat", borderwidth=0,
-                                 cursor="hand2", command=self.toggle_password)
-        self.eye_btn.grid(row=2, column=2, padx=(4, 0))
+        tk.Button(cred_frame, text="\u2699 Gestionar Jiras y filtros", bg="#16c79a", fg="#0f0f23",
+                  font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=3,
+                  cursor="hand2", command=self.open_jira_manager).grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
-        tk.Label(cred_frame, text="URL Jira:", bg="#0f0f23", fg="#ccc",
-                 font=("Segoe UI", 9)).grid(row=3, column=0, sticky="w")
-        self.url_entry = tk.Entry(cred_frame, bg="#0f0f23", fg="#e0e0e0", insertbackground="#16c79a",
-                                  font=("Segoe UI", 9), relief="flat", highlightthickness=1,
-                                  highlightcolor="#16c79a", highlightbackground="#2a2a4a", width=30)
-        self.url_entry.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=2)
-        self.url_entry.insert(0, env_data.get("JIRA_BASE_URL", ""))
-
-        tk.Label(cred_frame, text="Filtro ID:", bg="#0f0f23", fg="#ccc",
-                 font=("Segoe UI", 9)).grid(row=4, column=0, sticky="w")
-        self.filter_entry = tk.Entry(cred_frame, bg="#0f0f23", fg="#e0e0e0", insertbackground="#16c79a",
-                                     font=("Segoe UI", 9), relief="flat", highlightthickness=1,
-                                     highlightcolor="#16c79a", highlightbackground="#2a2a4a", width=12)
-        self.filter_entry.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=2)
-        self.filter_entry.insert(0, env_data.get("JIRA_FILTER_ID", ""))
-
-        save_cred_btn = tk.Button(cred_frame, text="Guardar", bg="#16c79a", fg="#0f0f23",
-                                  font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=2,
-                                  cursor="hand2", command=self.save_credentials)
-        save_cred_btn.grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.refresh_jira_summary()
 
         # Update frame
         upd_frame = tk.Frame(root, bg="#0f0f23", padx=16, pady=12,
@@ -760,24 +1202,33 @@ class LauncherApp:
                 tray_proc.kill()
         threading.Thread(target=start_tray, daemon=True).start()
 
-    def toggle_password(self):
-        if self.pass_visible:
-            self.pass_entry.config(show="*")
-            self.eye_btn.config(fg="#888")
-            self.pass_visible = False
-        else:
-            self.pass_entry.config(show="")
-            self.eye_btn.config(fg="#16c79a")
-            self.pass_visible = True
+    def refresh_jira_summary(self):
+        """Resumen de instancias/filtros activos en el panel principal."""
+        n_inst, n_filt = jira_counts()
+        if not jira_tables_ready():
+            self.jira_summary.config(text="sin inicializar", fg="#f5a623")
+            self.jira_detail.config(text="Arranca la aplicación una vez para crear la configuración.")
+            return
+        self.jira_summary.config(
+            text=f"{n_inst} Jira{'s' if n_inst != 1 else ''} · {n_filt} filtro{'s' if n_filt != 1 else ''}",
+            fg="#4A90D9" if n_inst else "#f5a623")
+        lineas = []
+        for inst, filters in list_instances():
+            activos = [f for f in filters if f["enabled"]]
+            estado = "" if inst["enabled"] else "  (desactivada)"
+            lineas.append(f"• {inst['name']}{estado} — {len(activos)} filtro(s) activo(s)")
+        self.jira_detail.config(text="\n".join(lineas) if lineas
+                                else "Todavía no hay ningún Jira configurado.")
 
-    def save_credentials(self):
-        env_data = load_env()
-        env_data["JIRA_USER"] = self.user_entry.get().strip()
-        env_data["JIRA_PASS"] = self.pass_entry.get().strip()
-        env_data["JIRA_BASE_URL"] = self.url_entry.get().strip() or "https://jiraitsm.eulen.com"
-        env_data["JIRA_FILTER_ID"] = self.filter_entry.get().strip() or "30004"
-        save_env(env_data)
-        self.restart_flask()
+    def open_jira_manager(self):
+        """Abre el gestor y refresca el resumen al cerrarlo."""
+        dlg = JiraManagerDialog(self.root)
+        self.root.wait_window(dlg)
+        self.refresh_jira_summary()
+        # Flask cachea poco, pero reiniciarlo garantiza que la próxima
+        # sincronización use la configuración recién guardada.
+        if flask_proc and flask_proc.poll() is None:
+            self.restart_flask()
 
     def check_for_updates(self, auto_check=False):
         """Check GitHub for a newer version and offer to update."""
