@@ -217,28 +217,72 @@ def delete_filter_db(filt_id):
 
 
 def test_instance_conn(base_url, username, password):
-    """Valida credenciales contra /rest/api/2/myself. Devuelve (ok, mensaje)."""
+    """Valida credenciales contra /rest/api/2/myself. Devuelve (ok, mensaje).
+
+    No se parsea el JSON a ciegas: si el Jira responde HTML (portal de login,
+    SSO, WAF, proxy) json.loads falla con "Expecting value: line 1 column 1
+    (char 0)", que no dice absolutamente nada. Aquí se mira antes el código
+    HTTP, el content-type y el principio del cuerpo para poder explicar qué
+    ha llegado realmente.
+    """
     import base64
     import json as _json
     import ssl
+
+    if not base_url:
+        return False, "La instancia no tiene URL configurada."
     url = base_url.rstrip("/") + "/rest/api/2/myself"
     token = base64.b64encode(f"{username}:{password}".encode()).decode()
-    req = Request(url, headers={"Authorization": f"Basic {token}"})
+    req = Request(url, headers={
+        "Authorization": f"Basic {token}",
+        "Accept": "application/json",
+        "User-Agent": "JiraBoard-Launcher",
+    })
     # Los Jira internos suelen tener certificado autofirmado
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
+
     try:
         with urlopen(req, timeout=15, context=ctx) as r:
-            data = _json.loads(r.read().decode("utf-8", "replace"))
-            who = data.get("displayName") or data.get("name") or username
-            return True, f"Conectado como {who}"
+            status = getattr(r, "status", r.getcode())
+            ctype = r.headers.get("Content-Type", "?")
+            raw = r.read()
+            final_url = r.geturl()
     except HTTPError as e:
+        try:
+            body = " ".join(e.read().decode("utf-8", "replace")[:300].split())
+        except Exception:
+            body = ""
         if e.code in (401, 403):
-            return False, "Usuario o contraseña incorrectos"
-        return False, f"Error HTTP {e.code}"
+            return False, f"HTTP {e.code} - usuario o contrasena incorrectos. URL: {url}"
+        return False, f"HTTP {e.code} en {url}. Respuesta: {body}"
     except Exception as e:
-        return False, str(e)
+        return False, f"{type(e).__name__}: {e}  [URL: {url}]"
+
+    text = raw.decode("utf-8", "replace").strip()
+    if not text:
+        return False, f"Respuesta vacia (HTTP {status}) desde {final_url}"
+
+    try:
+        data = _json.loads(text)
+    except ValueError:
+        inicio = " ".join(text[:300].split())
+        es_html = "<html" in text[:500].lower() or "text/html" in ctype.lower()
+        if es_html:
+            return False, (
+                f"El servidor devolvio HTML en vez de JSON (HTTP {status}, {ctype}). "
+                f"Suele significar que la URL redirige a un portal de login/SSO, "
+                f"que no es la raiz del Jira, o que hay un proxy delante. "
+                f"URL final: {final_url} | Inicio de la respuesta: {inicio}")
+        return False, (
+            f"Respuesta no-JSON (HTTP {status}, {ctype}) desde {final_url}. "
+            f"Inicio de la respuesta: {inicio}")
+
+    if not isinstance(data, dict):
+        return False, f"JSON inesperado (HTTP {status}): {str(data)[:200]}"
+    who = data.get("displayName") or data.get("name") or username
+    return True, f"Conectado como {who}"
 
 
 def check_flask():
@@ -683,10 +727,57 @@ class JiraManagerDialog(tk.Toplevel):
         _btn(bar, "Probar conexión", self.test_selected).pack(side="left", padx=(6, 0))
         _btn(bar, "Cerrar", self.destroy).pack(side="right")
 
-        self.status = tk.Label(self, text="", bg=BG2, fg="#888", font=("Segoe UI", 8), anchor="w")
-        self.status.pack(fill="x", padx=16, pady=(0, 8))
+        # Barra de estado: Entry de solo lectura en vez de Label para que el
+        # texto se pueda seleccionar y copiar (los errores de conexión son
+        # largos y hay que poder pegarlos en un ticket).
+        status_bar = tk.Frame(self, bg=BG2)
+        status_bar.pack(fill="x", padx=16, pady=(0, 10))
+        self.status_var = tk.StringVar(value="")
+        self.status = tk.Entry(status_bar, textvariable=self.status_var, bg=BG2, fg="#888",
+                               font=("Segoe UI", 8), relief="flat", borderwidth=0,
+                               highlightthickness=0, readonlybackground=BG2,
+                               state="readonly")
+        self.status.pack(side="left", fill="x", expand=True)
+        _btn(status_bar, "Ver / copiar", self.show_status_detail).pack(side="right", padx=(6, 0))
 
         self.reload()
+
+    def set_status(self, msg, color="#888"):
+        self.status_var.set(msg)
+        self.status.config(fg=color)
+
+    def copy_status(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.status_var.get())
+        self.update()
+
+    def show_status_detail(self):
+        """Ventana con el mensaje completo en un Text seleccionable + botón copiar."""
+        msg = self.status_var.get()
+        if not msg:
+            return
+        win = tk.Toplevel(self)
+        win.title("Detalle")
+        win.configure(bg=BG2)
+        win.geometry("700x260")
+        win.transient(self)
+        txt = tk.Text(win, bg=BG, fg=FG, font=("Consolas", 9), relief="flat",
+                      wrap="word", padx=10, pady=10, insertbackground=ACCENT)
+        txt.pack(fill="both", expand=True, padx=12, pady=12)
+        txt.insert("1.0", msg)
+        bar = tk.Frame(win, bg=BG2)
+        bar.pack(fill="x", padx=12, pady=(0, 12))
+
+        def copiar():
+            win.clipboard_clear()
+            win.clipboard_append(msg)
+            win.update()
+            lbl.config(text="Copiado al portapapeles", fg=ACCENT)
+
+        _btn(bar, "Copiar", copiar, bg=ACCENT, fg=BG).pack(side="left")
+        _btn(bar, "Cerrar", win.destroy).pack(side="right")
+        lbl = tk.Label(bar, text="", bg=BG2, fg="#888", font=("Segoe UI", 8))
+        lbl.pack(side="left", padx=(10, 0))
 
     # ── Datos ──
     def reload(self, keep=None):
@@ -856,7 +947,7 @@ class JiraManagerDialog(tk.Toplevel):
         if err:
             messagebox.showerror("Guardar", err, parent=self)
             return
-        self.status.config(text=f"Guardado: {name}", fg=ACCENT)
+        self.set_status(f"Guardado: {name}", ACCENT)
         self.reload(keep=f"i{new_id}")
 
     def save_filter_ui(self):
@@ -873,7 +964,7 @@ class JiraManagerDialog(tk.Toplevel):
             jql = ""
         name = self.f_name.get().strip() or (f"Filtro {fid}" if fid else "JQL")
         save_filter(self.sel_id, self.filter_instance_id, name, fid, jql, self.f_enabled.get())
-        self.status.config(text=f"Guardado: {name}", fg=ACCENT)
+        self.set_status(f"Guardado: {name}", ACCENT)
         self.reload(keep=f"i{self.filter_instance_id}")
 
     def delete_selected(self):
@@ -899,7 +990,7 @@ class JiraManagerDialog(tk.Toplevel):
             if not messagebox.askyesno("Eliminar", f"¿Eliminar el filtro «{f['name']}»?", parent=self):
                 return
             delete_filter_db(f["id"])
-        self.status.config(text="Eliminado", fg="#888")
+        self.set_status("Eliminado")
         self.reload()
 
     def test_selected(self):
@@ -910,12 +1001,15 @@ class JiraManagerDialog(tk.Toplevel):
         inst, _f = self.find_instance(inst_id)
         if not inst:
             return
-        self.status.config(text=f"Probando {inst['name']}...", fg="#888")
+        self.set_status(f"Probando {inst['name']}...")
         self.update_idletasks()
 
         def run():
             ok, msg = test_instance_conn(inst["base_url"], inst["username"], inst["password"])
-            self.status.config(text=msg, fg=ACCENT if ok else "#D96B6B")
+            self.set_status(msg, ACCENT if ok else "#D96B6B")
+            if not ok:
+                # El mensaje suele ser largo: se abre el detalle para poder leerlo y copiarlo
+                self.after(0, self.show_status_detail)
 
         threading.Thread(target=run, daemon=True).start()
 
