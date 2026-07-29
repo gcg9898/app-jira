@@ -5,6 +5,23 @@ JIRABOARD - CHANGELOG
 ⚠️  ACTUALIZACIÓN IMPORTANTE — Si no actualizas, las screenshots
     y las columnas en "Nueva Tarea" no funcionarán correctamente.
 
+[pendiente] 2026-07-29
+─────────────────────
+- MULTI-JIRA: se pueden configurar varias instancias de Jira y varios filtros
+  en cada una. La sincronización las recorre todas y vuelca al mismo tablero
+- Nuevo botón "🔗 Jira" en la barra superior para gestionar instancias y filtros
+  (añadir, activar/desactivar, probar conexión, editar credenciales, eliminar)
+- Los filtros aceptan tanto un ID numérico como una JQL libre
+- Las tarjetas muestran una etiqueta de color con el Jira de origen cuando hay
+  más de una instancia configurada
+- Los enlaces a Jira se construyen según la instancia de cada tarjeta (antes la
+  URL estaba fija en el código)
+- Si una instancia falla, el resto se sincroniza igual y se avisa del error; sus
+  tareas ya NO se marcan como "Desaparecidas del filtro"
+- La configuración pasa del .env a la base de datos. En la primera ejecución se
+  migra automáticamente el JIRA_BASE_URL/JIRA_FILTER_ID existente, así que no
+  hay que reconfigurar nada
+
 [f1c7a31] 2026-05-22
 ─────────────────────
 - CORRECCIÓN CRÍTICA: las screenshots ahora se guardan correctamente

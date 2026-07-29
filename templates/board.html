@@ -173,6 +173,61 @@
             font-weight: 700;
             margin-bottom: 6px;
         }
+        /* Etiqueta con el Jira de origen; sólo aparece si hay más de una instancia */
+        .task-card .jira-origin {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            font-weight: 700;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        /* ── Modal de instancias/filtros de Jira ── */
+        .jira-modal { max-width: 720px; width: 92vw; max-height: 85vh; overflow-y: auto; }
+        .jira-hint { color: #999; font-size: 0.78rem; line-height: 1.5; margin: 0 0 14px; }
+        .jira-instance {
+            border: 1px solid #2a2a45;
+            border-left-width: 4px;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+            background: #16162b;
+        }
+        .jira-instance.disabled { opacity: 0.5; }
+        .jira-instance-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .jira-instance-head .name { font-weight: 700; color: #f0f0f0; font-size: 0.9rem; }
+        .jira-instance-head .url { color: #888; font-size: 0.75rem; }
+        .jira-instance-head .spacer { flex: 1; }
+        .jira-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .jira-grid input, .jira-filter-add input {
+            background: #0f0f23; border: 1px solid #2a2a45; color: #e0e0e0;
+            padding: 7px 10px; border-radius: 6px; font-size: 0.8rem; font-family: inherit;
+        }
+        .jira-filters { margin-top: 10px; padding-left: 4px; }
+        .jira-filter {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 0; font-size: 0.8rem; color: #ccc;
+        }
+        .jira-filter .fname { flex: 1; }
+        .jira-filter code { color: #7BC67B; font-size: 0.75rem; }
+        .jira-filter-add { display: flex; gap: 6px; margin-top: 8px; }
+        .jira-filter-add input { flex: 1; }
+        .jira-new-instance {
+            border-top: 1px solid #2a2a45; padding-top: 14px; margin-top: 6px;
+        }
+        .jira-new-instance h4 { color: #ccc; font-size: 0.85rem; margin: 0 0 10px; }
+        .btn-mini {
+            background: #22223d; border: 1px solid #2a2a45; color: #bbb;
+            padding: 4px 9px; border-radius: 5px; font-size: 0.72rem; cursor: pointer;
+            font-family: inherit;
+        }
+        .btn-mini:hover { background: #2d2d4d; color: #fff; }
+        .btn-mini.danger:hover { background: #6b2020; border-color: #8b3030; color: #fff; }
+        .jira-test-result { font-size: 0.75rem; margin-top: 8px; }
+        .jira-test-result.ok { color: #7BC67B; }
+        .jira-test-result.err { color: #D96B6B; }
         .task-card .task-title {
             font-size: 0.9rem;
             font-weight: 600;
@@ -768,6 +823,7 @@
                     </div>
                 </div>
             </div>
+            <button class="btn btn-secondary" onclick="openJiraModal()" title="Gestionar instancias y filtros de Jira">🔗 Jira</button>
             <button class="btn btn-secondary" onclick="applyDefaults()" title="Restaurar columnas y filtros por defecto">⚙ Defaults</button>
             <button class="btn btn-secondary" onclick="addColumn()">+ Columna</button>
         </div>
@@ -844,15 +900,216 @@
         </div>
     </div>
 
+    <!-- Modal gestión de instancias y filtros de Jira -->
+    <div class="col-filter-overlay" id="jiraOverlay">
+        <div class="col-filter-modal jira-modal">
+            <h3>Instancias de Jira</h3>
+            <p class="jira-hint">
+                Cada instancia es un servidor de Jira con sus credenciales. Dentro de cada una
+                puedes añadir todos los filtros que quieras: la sincronización los recorre todos
+                y vuelca las incidencias al mismo tablero.
+            </p>
+            <div id="jiraInstanceList"></div>
+            <div class="jira-new-instance">
+                <h4>Añadir instancia</h4>
+                <div class="jira-grid">
+                    <input type="text" id="jiraNewName" placeholder="Nombre (ej. ITSM Eulen)">
+                    <input type="text" id="jiraNewUrl" placeholder="https://jira.miempresa.com">
+                    <input type="text" id="jiraNewUser" placeholder="Usuario">
+                    <input type="password" id="jiraNewPass" placeholder="Contraseña">
+                </div>
+                <button class="btn btn-primary" onclick="createInstance()" style="margin-top:8px;">+ Añadir instancia</button>
+            </div>
+            <div class="col-filter-actions">
+                <button class="btn btn-secondary" onclick="closeJiraModal()">Cerrar</button>
+                <button class="btn btn-primary" onclick="closeJiraModal(); syncJira();">Cerrar y sincronizar</button>
+            </div>
+        </div>
+    </div>
+
     <div class="toast" id="toast"></div>
 
     <script>
         let boardData = [];
         let environments = [];
+        let jiraInstances = [];
         let currentColumnId = null;
         let editingTaskId = null;
         let activeFilter = "";
         let currentSort = "priority"; // "priority" | "updated"
+
+        // ═══════════════════════════════════════════
+        // INSTANCIAS Y FILTROS DE JIRA
+        // ═══════════════════════════════════════════
+        async function loadJiraInstances() {
+            const r = await fetch("/api/jira-instances");
+            jiraInstances = await r.json();
+            return jiraInstances;
+        }
+
+        function openJiraModal() {
+            document.getElementById("jiraOverlay").classList.add("active");
+            renderJiraInstances();
+        }
+
+        function closeJiraModal() {
+            document.getElementById("jiraOverlay").classList.remove("active");
+            loadBoard();
+        }
+
+        async function renderJiraInstances() {
+            await loadJiraInstances();
+            const box = document.getElementById("jiraInstanceList");
+            if (!jiraInstances.length) {
+                box.innerHTML = `<p class="jira-hint">Todavía no hay ninguna instancia configurada.</p>`;
+                return;
+            }
+            box.innerHTML = jiraInstances.map(inst => `
+                <div class="jira-instance ${inst.enabled ? "" : "disabled"}" style="border-left-color:${inst.color}">
+                    <div class="jira-instance-head">
+                        <span class="name" style="color:${inst.color}">${escapeHtml(inst.name)}</span>
+                        <span class="url">${escapeHtml(inst.base_url)}</span>
+                        <span class="spacer"></span>
+                        <button class="btn-mini" onclick="toggleInstance(${inst.id}, ${inst.enabled ? 0 : 1})">
+                            ${inst.enabled ? "Desactivar" : "Activar"}
+                        </button>
+                        <button class="btn-mini" onclick="testInstance(${inst.id})">Probar</button>
+                        <button class="btn-mini" onclick="editInstanceCreds(${inst.id})">Credenciales</button>
+                        <button class="btn-mini danger" onclick="deleteInstance(${inst.id})">Eliminar</button>
+                    </div>
+                    <div class="jira-test-result" id="jiraTest${inst.id}"></div>
+                    <div class="jira-filters">
+                        ${inst.filters.length ? inst.filters.map(f => `
+                            <div class="jira-filter">
+                                <input type="checkbox" ${f.enabled ? "checked" : ""}
+                                       onchange="toggleFilter(${f.id}, this.checked)">
+                                <span class="fname">${escapeHtml(f.name)}</span>
+                                <code>${f.filter_id ? "filter=" + escapeHtml(f.filter_id) : escapeHtml(f.jql)}</code>
+                                <button class="btn-mini danger" onclick="deleteFilter(${f.id})">✕</button>
+                            </div>
+                        `).join("") : `<div class="jira-filter" style="color:#777">Sin filtros: esta instancia no se sincroniza.</div>`}
+                        <div class="jira-filter-add">
+                            <input type="text" id="fname${inst.id}" placeholder="Nombre del filtro">
+                            <input type="text" id="fid${inst.id}" placeholder="ID (ej. 30004) o JQL"
+                                   onkeydown="if(event.key==='Enter')addFilter(${inst.id})">
+                            <button class="btn-mini" onclick="addFilter(${inst.id})">+ Filtro</button>
+                        </div>
+                    </div>
+                </div>
+            `).join("");
+        }
+
+        async function createInstance() {
+            const name = document.getElementById("jiraNewName").value.trim();
+            const base_url = document.getElementById("jiraNewUrl").value.trim();
+            if (!name || !base_url) return showToast("Nombre y URL son obligatorios", true);
+            const r = await fetch("/api/jira-instances", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name, base_url,
+                    username: document.getElementById("jiraNewUser").value,
+                    password: document.getElementById("jiraNewPass").value
+                })
+            });
+            const d = await r.json();
+            if (!r.ok) return showToast(d.error || "Error", true);
+            ["jiraNewName", "jiraNewUrl", "jiraNewUser", "jiraNewPass"].forEach(id => document.getElementById(id).value = "");
+            showToast("Instancia añadida");
+            renderJiraInstances();
+        }
+
+        async function toggleInstance(id, enabled) {
+            await fetch(`/api/jira-instances/${id}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: !!enabled })
+            });
+            renderJiraInstances();
+        }
+
+        async function editInstanceCreds(id) {
+            const inst = jiraInstances.find(i => i.id === id);
+            const username = prompt(`Usuario para ${inst.name}:`, inst.username || "");
+            if (username === null) return;
+            const password = prompt(`Contraseña para ${inst.name}:\n(vacío = no cambiar)`, "");
+            if (password === null) return;
+            // Si se deja vacío no se manda el campo: el backend conserva la actual
+            const body = { username };
+            if (password !== "") body.password = password;
+            await fetch(`/api/jira-instances/${id}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            });
+            showToast("Credenciales actualizadas");
+            renderJiraInstances();
+        }
+
+        async function deleteInstance(id) {
+            const inst = jiraInstances.find(i => i.id === id);
+            if (!confirm(`¿Eliminar la instancia "${inst.name}"?\n\nLas tarjetas ya importadas se conservan, pero dejarán de sincronizarse y perderán el enlace a Jira.`)) return;
+            await fetch(`/api/jira-instances/${id}`, { method: "DELETE" });
+            showToast("Instancia eliminada");
+            renderJiraInstances();
+        }
+
+        async function testInstance(id) {
+            const box = document.getElementById(`jiraTest${id}`);
+            box.className = "jira-test-result";
+            box.textContent = "Probando conexión...";
+            const r = await fetch(`/api/jira-instances/${id}/test`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({})
+            });
+            const d = await r.json();
+            if (d.ok) {
+                box.className = "jira-test-result ok";
+                box.textContent = `Conectado como ${d.user}`;
+            } else {
+                box.className = "jira-test-result err";
+                box.textContent = d.error || "No se pudo conectar";
+            }
+        }
+
+        async function addFilter(instId) {
+            const nameEl = document.getElementById(`fname${instId}`);
+            const idEl = document.getElementById(`fid${instId}`);
+            const raw = idEl.value.trim();
+            if (!raw) return showToast("Indica el ID del filtro o una JQL", true);
+            // Sólo dígitos => es un ID de filtro; cualquier otra cosa se trata como JQL
+            const isNumeric = /^\d+$/.test(raw);
+            const r = await fetch("/api/jira-filters", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    instance_id: instId,
+                    name: nameEl.value.trim(),
+                    filter_id: isNumeric ? raw : "",
+                    jql: isNumeric ? "" : raw
+                })
+            });
+            const d = await r.json();
+            if (!r.ok) return showToast(d.error || "Error", true);
+            showToast("Filtro añadido");
+            renderJiraInstances();
+        }
+
+        async function toggleFilter(id, enabled) {
+            await fetch(`/api/jira-filters/${id}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled })
+            });
+            renderJiraInstances();
+        }
+
+        async function deleteFilter(id) {
+            if (!confirm("¿Eliminar este filtro?")) return;
+            await fetch(`/api/jira-filters/${id}`, { method: "DELETE" });
+            renderJiraInstances();
+        }
 
         // ═══════════════════════════════════════════
         // CARGAR DATOS
@@ -862,7 +1119,8 @@
             const scrollY = window.scrollY;
             const [colResp, envResp] = await Promise.all([
                 fetch(`/api/columns?sort=${currentSort}`),
-                fetch("/api/environments")
+                fetch("/api/environments"),
+                loadJiraInstances()
             ]);
             boardData = await colResp.json();
             environments = await envResp.json();
@@ -982,7 +1240,12 @@
             else if (p.includes("low") || p.includes("baja"))
                 priorityClass = "priority-low";
 
-            const jiraBadge = task.jira_key ? `<span class="jira-badge">${task.jira_key}</span> <a href="https://jiraitsm.eulen.com/browse/${task.jira_key}" target="_blank" style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>` : "";
+            const jiraUrl = task.jira_url || (task.jira_key ? `https://jiraitsm.eulen.com/browse/${task.jira_key}` : "");
+            // El origen sólo aporta información cuando hay más de un Jira configurado
+            const originTag = (jiraInstances.length > 1 && task.jira_instance_name)
+                ? `<span class="jira-origin" style="background:${task.jira_instance_color || '#4A90D9'}22;color:${task.jira_instance_color || '#4A90D9'};border:1px solid ${task.jira_instance_color || '#4A90D9'}55;">${escapeHtml(task.jira_instance_name)}</span> `
+                : "";
+            const jiraBadge = task.jira_key ? `${originTag}<span class="jira-badge">${task.jira_key}</span> <a href="${jiraUrl}" target="_blank" style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>` : "";
             const linkUrl = task.link && !task.link.startsWith("https://") ? "https://" + task.link : task.link;
             const linkHtml = task.link ? `<a href="${escapeHtml(linkUrl)}" target="_blank" style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>` : "";
             const lastComment = task.last_comment ? `<div class="last-comment">${escapeHtml(task.last_comment.substring(0, 100))}</div>` : "";
@@ -1468,6 +1731,10 @@
                 const data = await resp.json();
                 if (data.ok) {
                     showToast(`✓ Sincronizado: ${data.total} incidencias (${data.imported} nuevas)`);
+                    // Un origen puede fallar sin tumbar el resto: se avisa aparte
+                    if (data.errors && data.errors.length) {
+                        setTimeout(() => showToast("⚠ " + data.errors.join(" | ")), 3200);
+                    }
                     // Don't loadBoard() here — wait for polling to detect "done" phase
                 } else {
                     clearInterval(pollInterval);

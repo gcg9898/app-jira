@@ -60,10 +60,17 @@ def _load_env():
 
 
 _env = _load_env()
+# Valores del .env: se usan solo como semilla inicial de la tabla jira_instances
+# la primera vez que arranca la app (ver _seed_jira_config). A partir de ahí la
+# configuración vive en base de datos y se gestiona desde la UI.
 JIRA_BASE_URL = _env.get("JIRA_BASE_URL", "https://jiraitsm.eulen.com")
 FILTER_ID = _env.get("JIRA_FILTER_ID", "30004")
 JIRA_USER = _env.get("JIRA_USER", "")
 JIRA_PASS = _env.get("JIRA_PASS", "")
+
+# Paleta para asignar color automáticamente a instancias nuevas
+INSTANCE_COLORS = ["#4A90D9", "#E5A33D", "#7BC67B", "#C97BD9", "#D96B6B",
+                   "#5FBFC4", "#B0A16B", "#8E8ED9"]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -123,6 +130,28 @@ def init_db():
             label TEXT NOT NULL,
             FOREIGN KEY (column_id) REFERENCES columns(id) ON DELETE CASCADE,
             UNIQUE(column_id, label)
+        );
+
+        CREATE TABLE IF NOT EXISTS jira_instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            base_url TEXT NOT NULL,
+            username TEXT DEFAULT '',
+            password TEXT DEFAULT '',
+            color TEXT DEFAULT '#4A90D9',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            position INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS jira_filters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            filter_id TEXT DEFAULT '',
+            jql TEXT DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            position INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (instance_id) REFERENCES jira_instances(id) ON DELETE CASCADE
         );
     """)
     # Crear columnas por defecto si no existen
@@ -204,6 +233,13 @@ def migrate_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN jira_oleada TEXT DEFAULT ''")
     if "custom_title" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN custom_title TEXT DEFAULT ''")
+    # Origen de la tarea: qué instancia de Jira y qué filtro la trajeron.
+    # NULL en tareas manuales y en las que existían antes de la multi-instancia
+    # (esas se reasignan a la instancia por defecto en _seed_jira_config).
+    if "jira_instance_id" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN jira_instance_id INTEGER DEFAULT NULL")
+    if "jira_filter_id" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN jira_filter_id INTEGER DEFAULT NULL")
     # Add is_default flag to columns
     col_cols = [row[1] for row in conn.execute("PRAGMA table_info(columns)").fetchall()]
     if "is_default" not in col_cols:
@@ -264,10 +300,89 @@ def migrate_db():
         conn.executemany("INSERT INTO environments (name, position) VALUES (?, ?)", [
             ("INT", 0), ("PRE", 1), ("PROD", 2)
         ])
+    # Tablas de configuración multi-Jira (para DBs creadas antes de esta versión)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS jira_instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            base_url TEXT NOT NULL,
+            username TEXT DEFAULT '',
+            password TEXT DEFAULT '',
+            color TEXT DEFAULT '#4A90D9',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            position INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS jira_filters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            instance_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            filter_id TEXT DEFAULT '',
+            jql TEXT DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            position INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (instance_id) REFERENCES jira_instances(id) ON DELETE CASCADE
+        )
+    """)
+    _seed_jira_config(conn)
     conn.commit()
     conn.close()
 
+
+def _seed_jira_config(conn):
+    """Crea la instancia y el filtro iniciales a partir del .env.
+
+    Solo se ejecuta la primera vez (cuando no hay ninguna instancia). Las tareas
+    Jira que ya existían se reasignan a esa instancia para que los enlaces y la
+    detección de 'desaparecidas del filtro' sigan funcionando igual que antes.
+    """
+    if conn.execute("SELECT COUNT(*) FROM jira_instances").fetchone()[0] > 0:
+        return
+    if not JIRA_BASE_URL:
+        return
+    name = JIRA_BASE_URL.replace("https://", "").replace("http://", "").split("/")[0] or "Jira"
+    conn.execute(
+        """INSERT INTO jira_instances (name, base_url, username, password, color, enabled, position)
+           VALUES (?, ?, ?, ?, ?, 1, 0)""",
+        (name, JIRA_BASE_URL.rstrip("/"), JIRA_USER, JIRA_PASS, INSTANCE_COLORS[0])
+    )
+    inst_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    if FILTER_ID:
+        conn.execute(
+            """INSERT INTO jira_filters (instance_id, name, filter_id, enabled, position)
+               VALUES (?, ?, ?, 1, 0)""",
+            (inst_id, f"Filtro {FILTER_ID}", FILTER_ID)
+        )
+        filt_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    else:
+        filt_id = None
+    conn.execute(
+        "UPDATE tasks SET jira_instance_id = ?, jira_filter_id = ? WHERE jira_key != '' AND jira_instance_id IS NULL",
+        (inst_id, filt_id)
+    )
+
 migrate_db()
+
+
+def _jira_instance_map(conn):
+    """{id: {name, base_url, color}} para poder adjuntar el origen a cada tarea."""
+    return {r["id"]: {"name": r["name"], "base_url": r["base_url"], "color": r["color"]}
+            for r in conn.execute("SELECT id, name, base_url, color FROM jira_instances").fetchall()}
+
+
+def _attach_origin(task_dict, imap):
+    """Añade jira_url, jira_instance_name y jira_instance_color a una tarea.
+
+    La URL se construye en el backend a propósito: antes estaba hardcodeada en
+    tres plantillas y con varias instancias dejaría de ser válida.
+    """
+    inst = imap.get(task_dict.get("jira_instance_id"))
+    key = task_dict.get("jira_key") or ""
+    task_dict["jira_instance_name"] = inst["name"] if inst else ""
+    task_dict["jira_instance_color"] = inst["color"] if inst else ""
+    task_dict["jira_url"] = f"{inst['base_url']}/browse/{key}" if inst and key else ""
+    return task_dict
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -294,6 +409,7 @@ def api_search():
     if not q:
         return jsonify([])
     conn = get_db()
+    imap = _jira_instance_map(conn)
     pattern = f"%{q}%"
     tasks = conn.execute("""
         SELECT t.*, c.name as column_name
@@ -318,6 +434,7 @@ def api_search():
         if override:
             td["priority"] = override
         td["tickets"] = [dict(tk) for tk in tickets]
+        _attach_origin(td, imap)
         result.append(td)
     conn.close()
     return jsonify(result)
@@ -373,6 +490,7 @@ def get_labels():
 def get_columns():
     sort_by = request.args.get("sort", "priority")  # priority | updated
     conn = get_db()
+    imap = _jira_instance_map(conn)
     cols = conn.execute("SELECT * FROM columns ORDER BY position").fetchall()
     result = []
     for col in cols:
@@ -408,6 +526,7 @@ def get_columns():
                 "SELECT env_id FROM task_environments WHERE task_id = ?", (t["id"],)
             ).fetchall()
             task_dict["environments"] = [row["env_id"] for row in task_envs]
+            _attach_origin(task_dict, imap)
             tasks_list.append(task_dict)
 
         if sort_by == "updated":
@@ -818,8 +937,9 @@ def api_deleted():
             WHERE t.deleted = 1
             ORDER BY t.updated_at DESC
         """).fetchall()
+    imap = _jira_instance_map(conn)
     conn.close()
-    result = [dict(t) for t in tasks]
+    result = [_attach_origin(dict(t), imap) for t in tasks]
     # Sort
     if sort_by == "title":
         result.sort(key=lambda t: (t.get("custom_title") or t.get("title") or "").lower())
@@ -912,14 +1032,252 @@ def delete_ticket(ticket_id):
 
 
 # ═══════════════════════════════════════════════════════════════
+# API - INSTANCIAS Y FILTROS DE JIRA
+# ═══════════════════════════════════════════════════════════════
+def _instance_public(row):
+    """Serializa una instancia sin exponer la contraseña."""
+    d = dict(row)
+    d["has_password"] = bool(d.pop("password", "") or "")
+    return d
+
+
+def get_jira_sources(conn):
+    """Devuelve [(instancia, [filtros])] de todo lo que está habilitado.
+
+    Una instancia sin filtros habilitados no se sincroniza: no hay nada que pedir.
+    """
+    sources = []
+    instances = conn.execute(
+        "SELECT * FROM jira_instances WHERE enabled = 1 ORDER BY position, id"
+    ).fetchall()
+    for inst in instances:
+        filters = conn.execute(
+            "SELECT * FROM jira_filters WHERE instance_id = ? AND enabled = 1 ORDER BY position, id",
+            (inst["id"],)
+        ).fetchall()
+        if filters:
+            sources.append((inst, filters))
+    return sources
+
+
+@app.route("/api/jira-instances", methods=["GET"])
+def list_jira_instances():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM jira_instances ORDER BY position, id").fetchall()
+    result = []
+    for r in rows:
+        inst = _instance_public(r)
+        inst["filters"] = [dict(f) for f in conn.execute(
+            "SELECT * FROM jira_filters WHERE instance_id = ? ORDER BY position, id", (r["id"],)
+        ).fetchall()]
+        result.append(inst)
+    conn.close()
+    return jsonify(result)
+
+
+@app.route("/api/jira-instances", methods=["POST"])
+def create_jira_instance():
+    data = request.json or {}
+    name = (data.get("name") or "").strip()
+    base_url = (data.get("base_url") or "").strip().rstrip("/")
+    if not name or not base_url:
+        return jsonify({"error": "Nombre y URL son obligatorios"}), 400
+    conn = get_db()
+    n = conn.execute("SELECT COUNT(*) FROM jira_instances").fetchone()[0]
+    try:
+        conn.execute(
+            """INSERT INTO jira_instances (name, base_url, username, password, color, enabled, position)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (name, base_url, data.get("username", ""), data.get("password", ""),
+             data.get("color") or INSTANCE_COLORS[n % len(INSTANCE_COLORS)],
+             1 if data.get("enabled", True) else 0, n)
+        )
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": f"Ya existe una instancia llamada '{name}'"}), 409
+    new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "id": new_id}), 201
+
+
+@app.route("/api/jira-instances/<int:inst_id>", methods=["PUT"])
+def update_jira_instance(inst_id):
+    data = request.json or {}
+    conn = get_db()
+    row = conn.execute("SELECT * FROM jira_instances WHERE id = ?", (inst_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "No existe"}), 404
+    # La contraseña solo se sobrescribe si viene en la petición: así la UI puede
+    # guardar cambios sin tener que reenviarla (nunca se envía al navegador).
+    password = data["password"] if "password" in data else row["password"]
+    try:
+        conn.execute(
+            """UPDATE jira_instances SET name=?, base_url=?, username=?, password=?,
+               color=?, enabled=? WHERE id=?""",
+            ((data.get("name") or row["name"]).strip(),
+             (data.get("base_url") or row["base_url"]).strip().rstrip("/"),
+             data.get("username", row["username"]),
+             password,
+             data.get("color") or row["color"],
+             1 if data.get("enabled", row["enabled"]) else 0,
+             inst_id)
+        )
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error": "Ya existe otra instancia con ese nombre"}), 409
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/jira-instances/<int:inst_id>", methods=["DELETE"])
+def delete_jira_instance(inst_id):
+    conn = get_db()
+    # Las tareas importadas se conservan; solo pierden el vínculo con el origen.
+    conn.execute(
+        "UPDATE tasks SET jira_instance_id = NULL, jira_filter_id = NULL WHERE jira_instance_id = ?",
+        (inst_id,)
+    )
+    conn.execute("DELETE FROM jira_instances WHERE id = ?", (inst_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/jira-instances/<int:inst_id>/test", methods=["POST"])
+def test_jira_instance(inst_id):
+    """Comprueba credenciales y, si se indica un filtro, que devuelve resultados."""
+    data = request.json or {}
+    conn = get_db()
+    inst = conn.execute("SELECT * FROM jira_instances WHERE id = ?", (inst_id,)).fetchone()
+    conn.close()
+    if not inst:
+        return jsonify({"error": "No existe"}), 404
+    session = req_lib.Session()
+    session.auth = (inst["username"], inst["password"])
+    session.verify = False
+    try:
+        resp = session.get(f"{inst['base_url']}/rest/api/2/myself", timeout=15)
+        if resp.status_code != 200:
+            return jsonify({"ok": False, "error": f"Autenticación fallida ({resp.status_code})"})
+        who = resp.json().get("displayName") or resp.json().get("name", "")
+        result = {"ok": True, "user": who}
+        jql = _filter_jql({"filter_id": data.get("filter_id", ""), "jql": data.get("jql", "")})
+        if jql:
+            r2 = session.get(f"{inst['base_url']}/rest/api/2/search",
+                             params={"jql": jql, "maxResults": 0}, timeout=20)
+            if r2.status_code != 200:
+                result["filter_error"] = f"El filtro no responde ({r2.status_code})"
+            else:
+                result["issues"] = r2.json().get("total", 0)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/jira-filters", methods=["POST"])
+def create_jira_filter():
+    data = request.json or {}
+    instance_id = data.get("instance_id")
+    name = (data.get("name") or "").strip()
+    filter_id = (data.get("filter_id") or "").strip()
+    jql = (data.get("jql") or "").strip()
+    if not instance_id or not (filter_id or jql):
+        return jsonify({"error": "Indica el ID de filtro o una JQL"}), 400
+    conn = get_db()
+    if not conn.execute("SELECT 1 FROM jira_instances WHERE id = ?", (instance_id,)).fetchone():
+        conn.close()
+        return jsonify({"error": "La instancia no existe"}), 404
+    n = conn.execute("SELECT COUNT(*) FROM jira_filters WHERE instance_id = ?", (instance_id,)).fetchone()[0]
+    conn.execute(
+        """INSERT INTO jira_filters (instance_id, name, filter_id, jql, enabled, position)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (instance_id, name or (f"Filtro {filter_id}" if filter_id else "JQL"),
+         filter_id, jql, 1 if data.get("enabled", True) else 0, n)
+    )
+    new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "id": new_id}), 201
+
+
+@app.route("/api/jira-filters/<int:filt_id>", methods=["PUT"])
+def update_jira_filter(filt_id):
+    data = request.json or {}
+    conn = get_db()
+    row = conn.execute("SELECT * FROM jira_filters WHERE id = ?", (filt_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "No existe"}), 404
+    conn.execute(
+        "UPDATE jira_filters SET name=?, filter_id=?, jql=?, enabled=? WHERE id=?",
+        ((data.get("name") or row["name"]).strip(),
+         data.get("filter_id", row["filter_id"]).strip(),
+         data.get("jql", row["jql"]).strip(),
+         1 if data.get("enabled", row["enabled"]) else 0,
+         filt_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/jira-filters/<int:filt_id>", methods=["DELETE"])
+def delete_jira_filter(filt_id):
+    conn = get_db()
+    conn.execute("UPDATE tasks SET jira_filter_id = NULL WHERE jira_filter_id = ?", (filt_id,))
+    conn.execute("DELETE FROM jira_filters WHERE id = ?", (filt_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+# ═══════════════════════════════════════════════════════════════
 # API - SINCRONIZAR CON JIRA
 # ═══════════════════════════════════════════════════════════════
+def _filter_jql(filt):
+    """JQL a lanzar para un filtro: el ID tiene prioridad sobre la JQL libre."""
+    fid = (filt["filter_id"] or "").strip() if filt["filter_id"] is not None else ""
+    if fid:
+        return f"filter={fid}"
+    return (filt["jql"] or "").strip()
+
+
+def _fetch_issues(session, base_url, jql):
+    """Descarga todas las incidencias de una JQL paginando de 50 en 50."""
+    issues = []
+    start_at = 0
+    while True:
+        resp = session.get(
+            f"{base_url}/rest/api/2/search",
+            params={
+                "jql": jql,
+                "startAt": start_at,
+                "maxResults": 50,
+                "fields": "status,description,priority,summary,labels,comment,updated",
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"Error Jira {resp.status_code} en {base_url}")
+        data = resp.json()
+        issues.extend(data.get("issues", []))
+        if start_at + 50 >= data.get("total", 0):
+            break
+        start_at += 50
+    return issues
+
+
 @app.route("/api/sync-jira", methods=["POST"])
 def sync_jira():
-    session = req_lib.Session()
-    session.auth = (JIRA_USER, JIRA_PASS)
-    session.verify = False
-    session.headers.update({"Content-Type": "application/json"})
+    conn = get_db()
+    sources = get_jira_sources(conn)
+    if not sources:
+        conn.close()
+        return jsonify({"error": "No hay ninguna instancia de Jira con filtros activos. "
+                                 "Configúralas en Ajustes → Jira."}), 400
 
     # Phase 1: Fetching from Jira
     _sync_progress["phase"] = "fetching"
@@ -929,29 +1287,38 @@ def sync_jira():
     _sync_progress["done"] = 0
     _sync_progress["current"] = ""
 
+    # all_issues: lista de (issue, instancia, filtro) para saber de dónde vino cada una.
+    # seen_by_instance: claves vistas por instancia, para la lógica de "desaparecidas".
     all_issues = []
-    start_at = 0
-    while True:
-        resp = session.get(
-            f"{JIRA_BASE_URL}/rest/api/2/search",
-            params={
-                "jql": f"filter={FILTER_ID}",
-                "startAt": start_at,
-                "maxResults": 50,
-                "fields": "status,description,priority,summary,labels,comment,updated",
-            },
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            return jsonify({"error": f"Error Jira: {resp.status_code}"}), 500
-        data = resp.json()
-        all_issues.extend(data.get("issues", []))
-        if start_at + 50 >= data.get("total", 0):
-            break
-        start_at += 50
+    seen_by_instance = {}
+    errors = []
+    for inst, filters in sources:
+        session = req_lib.Session()
+        session.auth = (inst["username"], inst["password"])
+        session.verify = False
+        session.headers.update({"Content-Type": "application/json"})
+        seen_by_instance.setdefault(inst["id"], set())
+        for filt in filters:
+            jql = _filter_jql(filt)
+            if not jql:
+                continue
+            _sync_progress["phase_text"] = f"Obteniendo {inst['name']} / {filt['name']}..."
+            try:
+                issues = _fetch_issues(session, inst["base_url"], jql)
+            except Exception as e:
+                errors.append(f"{inst['name']} / {filt['name']}: {e}")
+                continue
+            for issue in issues:
+                all_issues.append((issue, inst, filt))
+                seen_by_instance[inst["id"]].add(issue["key"])
+
+    if not all_issues and errors:
+        _sync_progress["running"] = False
+        _sync_progress["phase"] = "idle"
+        conn.close()
+        return jsonify({"error": " | ".join(errors)}), 500
 
     # Mapeo de estado Jira a columna del board usando column_filters
-    conn = get_db()
     columns = conn.execute("SELECT * FROM columns ORDER BY position").fetchall()
     col_map = {c["name"].lower(): c["id"] for c in columns}
 
@@ -983,7 +1350,7 @@ def sync_jira():
     _sync_progress["total"] = len(all_issues)
     _sync_progress["done"] = 0
 
-    for issue in all_issues:
+    for issue, inst, filt in all_issues:
         key = issue["key"]
         fields = issue.get("fields", {})
         summary = fields.get("summary", key)
@@ -1043,8 +1410,16 @@ def sync_jira():
             body = lc.get("body", "")[:200]
             last_comment = f"[{autor}] {body}"
 
-        # Ver si ya existe
-        existing = conn.execute("SELECT id, column_override, priority_override, deleted FROM tasks WHERE jira_key = ?", (key,)).fetchone()
+        # Ver si ya existe. La clave sola no basta: dos instancias distintas
+        # pueden usar el mismo prefijo de proyecto y colisionar (PROJ-1 en ambas).
+        # Se admite también la fila antigua sin instancia asignada para poder
+        # adoptarla en la primera sincronización tras la migración.
+        existing = conn.execute(
+            """SELECT id, column_override, priority_override, deleted FROM tasks
+                WHERE jira_key = ? AND (jira_instance_id = ? OR jira_instance_id IS NULL)
+                ORDER BY jira_instance_id IS NULL LIMIT 1""",
+            (key, inst["id"])
+        ).fetchone()
         col_id = get_column_id(status)
 
         if existing:
@@ -1091,16 +1466,22 @@ def sync_jira():
                         (summary, desc, status, labels, last_comment, col_id, col_id, jira_updated, jira_created,
                          jira_due_date, jira_start_date, jira_oleada, now, existing["id"])
                     )
+            # El origen se actualiza aparte para no duplicar las cuatro variantes
+            # de UPDATE de arriba.
+            conn.execute("UPDATE tasks SET jira_instance_id=?, jira_filter_id=? WHERE id=?",
+                         (inst["id"], filt["id"], existing["id"]))
         else:
             max_pos = conn.execute(
                 "SELECT COALESCE(MAX(position), -1) FROM tasks WHERE column_id = ?", (col_id,)
             ).fetchone()[0]
             conn.execute(
                 """INSERT INTO tasks (column_id, jira_column_id, title, description, jira_key, jira_status,
-                   priority, labels, last_comment, jira_updated, jira_created, jira_due_date, jira_start_date, jira_oleada, position, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   priority, labels, last_comment, jira_updated, jira_created, jira_due_date, jira_start_date, jira_oleada,
+                   jira_instance_id, jira_filter_id, position, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (col_id, col_id, summary, desc, key, status, priority, labels, last_comment,
-                 jira_updated, jira_created, jira_due_date, jira_start_date, jira_oleada, max_pos + 1, now, now)
+                 jira_updated, jira_created, jira_due_date, jira_start_date, jira_oleada,
+                 inst["id"], filt["id"], max_pos + 1, now, now)
             )
             imported += 1
 
@@ -1108,7 +1489,6 @@ def sync_jira():
         _sync_progress["current"] = key
 
     # Move Jira tasks not in filter to the column with "Desaparecidas del filtro"
-    synced_keys = {issue["key"] for issue in all_issues}
     # Find the column that has the special filter
     disappeared_col_id = None
     for c in columns:
@@ -1120,46 +1500,79 @@ def sync_jira():
     if disappeared_col_id is None:
         sin_asig = conn.execute("SELECT id FROM columns WHERE name = 'Sin Asignación'").fetchone()
         disappeared_col_id = sin_asig["id"] if sin_asig else columns[-1]["id"]
-    # Only move non-deleted Jira tasks that disappeared from the filter
-    all_jira_tasks = conn.execute("SELECT id, jira_key, column_id FROM tasks WHERE jira_key != '' AND deleted = 0").fetchall()
-    for task in all_jira_tasks:
-        if task["jira_key"] not in synced_keys and task["column_id"] != disappeared_col_id:
-            conn.execute("UPDATE tasks SET column_id=?, jira_column_id=?, column_override=0, jira_status='Desaparecida del filtro', updated_at=? WHERE id=?",
-                         (disappeared_col_id, disappeared_col_id, now, task["id"]))
+    # Solo se evalúan las instancias que se han sincronizado en esta pasada y que
+    # no han dado error: si un Jira estaba caído o deshabilitado, sus tareas no
+    # deben marcarse como desaparecidas.
+    failed_instances = {inst["id"] for inst, _ in sources
+                        if any(e.startswith(f"{inst['name']} /") for e in errors)}
+    for inst_id, synced_keys in seen_by_instance.items():
+        if inst_id in failed_instances:
+            continue
+        tasks_of_instance = conn.execute(
+            "SELECT id, jira_key, column_id FROM tasks WHERE jira_key != '' AND deleted = 0 AND jira_instance_id = ?",
+            (inst_id,)
+        ).fetchall()
+        for task in tasks_of_instance:
+            if task["jira_key"] not in synced_keys and task["column_id"] != disappeared_col_id:
+                conn.execute(
+                    "UPDATE tasks SET column_id=?, jira_column_id=?, column_override=0, jira_status='Desaparecida del filtro', updated_at=? WHERE id=?",
+                    (disappeared_col_id, disappeared_col_id, now, task["id"])
+                )
 
     conn.commit()
     conn.close()
 
-    # Phase 3: Screenshots
-    issue_keys = [issue["key"] for issue in all_issues]
+    # Phase 3: Screenshots — agrupadas por instancia para poder autenticarse en cada Jira
+    by_instance = {}
+    for issue, inst, _filt in all_issues:
+        entry = by_instance.setdefault(inst["id"], {"instance": dict(inst), "keys": []})
+        if issue["key"] not in entry["keys"]:
+            entry["keys"].append(issue["key"])
+    screenshot_jobs = list(by_instance.values())
+    total_keys = sum(len(j["keys"]) for j in screenshot_jobs)
     _sync_progress["phase"] = "screenshots"
     _sync_progress["phase_text"] = "Capturando screenshots..."
-    _sync_progress["total"] = len(issue_keys)
+    _sync_progress["total"] = total_keys
     _sync_progress["done"] = 0
     _sync_progress["current"] = ""
     import threading
-    t = threading.Thread(target=_take_screenshots_background, args=(issue_keys,), daemon=True)
+    t = threading.Thread(target=_take_screenshots_background, args=(screenshot_jobs,), daemon=True)
     t.start()
 
-    return jsonify({"ok": True, "total": len(all_issues), "imported": imported, "screenshots_async": True})
+    return jsonify({"ok": True, "total": len(all_issues), "imported": imported,
+                    "instances": len(sources),
+                    "filters": sum(len(f) for _, f in sources),
+                    "errors": errors, "screenshots_async": True})
 
 
-def _take_screenshots_background(issue_keys):
-    """Take screenshots in background using multiple Selenium workers."""
+def _take_screenshots_background(jobs):
+    """Take screenshots in background using multiple Selenium workers.
+
+    `jobs` es una lista de {"instance": {...}, "keys": [...]}: cada worker se
+    autentica en el Jira que le corresponde.
+    """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import math
 
-    num_workers = min(4, math.ceil(len(issue_keys) / 5))
-    if num_workers == 0:
+    chunks = []
+    for job in jobs:
+        keys = job["keys"]
+        if not keys:
+            continue
+        n = min(4, math.ceil(len(keys) / 5)) or 1
+        for i in range(n):
+            part = keys[i::n]
+            if part:
+                chunks.append((job["instance"], part))
+
+    if not chunks:
         _sync_progress["phase"] = "done"
         _sync_progress["phase_text"] = "Completado"
         _sync_progress["running"] = False
         return
 
-    chunks = [issue_keys[i::num_workers] for i in range(num_workers)]
-
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(_screenshot_worker, chunk) for chunk in chunks]
+    with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
+        futures = [executor.submit(_screenshot_worker, inst, part) for inst, part in chunks]
         for f in as_completed(futures):
             try:
                 f.result()
@@ -1170,8 +1583,8 @@ def _take_screenshots_background(issue_keys):
     _sync_progress["running"] = False
 
 
-def _screenshot_worker(keys):
-    """Single Selenium worker that processes a list of Jira keys."""
+def _screenshot_worker(instance, keys):
+    """Single Selenium worker that processes a list of Jira keys for one instance."""
     from selenium import webdriver
     from selenium.webdriver.common.by import By
     from selenium.webdriver.chrome.options import Options
@@ -1196,12 +1609,13 @@ def _screenshot_worker(keys):
     chrome_options.add_argument("--ignore-certificate-errors")
 
     driver = None
+    base_url = instance["base_url"].rstrip("/")
     try:
         driver = webdriver.Chrome(options=chrome_options)
-        driver.get(f"{JIRA_BASE_URL}/login.jsp")
+        driver.get(f"{base_url}/login.jsp")
         WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "login-form-username")))
-        driver.find_element(By.ID, "login-form-username").send_keys(JIRA_USER)
-        driver.find_element(By.ID, "login-form-password").send_keys(JIRA_PASS)
+        driver.find_element(By.ID, "login-form-username").send_keys(instance["username"])
+        driver.find_element(By.ID, "login-form-password").send_keys(instance["password"])
         driver.find_element(By.ID, "login-form-submit").click()
         WebDriverWait(driver, 10).until(lambda d: "login" not in d.current_url.lower())
 
@@ -1210,7 +1624,7 @@ def _screenshot_worker(keys):
             try:
                 # actionOrder=asc en la URL fuerza orden ascendente (más antiguo arriba,
                 # más reciente al final) sólo para esta carga, sin tocar las preferencias del usuario
-                driver.get(f"{JIRA_BASE_URL}/browse/{key}?focusedId=comments&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel&actionOrder=asc")
+                driver.get(f"{base_url}/browse/{key}?focusedId=comments&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel&actionOrder=asc")
                 # Wait for the activity section to load
                 try:
                     WebDriverWait(driver, 8).until(

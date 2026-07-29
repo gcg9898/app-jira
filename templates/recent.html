@@ -356,7 +356,7 @@
             else if (p.includes("low") || p.includes("baja")) priorityClass = "priority-low";
 
             const jiraBadge = task.jira_key
-                ? `<a class="jira-badge" href="https://jiraitsm.eulen.com/browse/${escapeHtml(task.jira_key)}" target="_blank">${escapeHtml(task.jira_key)}</a>`
+                ? `<a class="jira-badge" href="${escapeHtml(task.jira_url || ('https://jiraitsm.eulen.com/browse/' + task.jira_key))}" target="_blank">${escapeHtml(task.jira_key)}</a>`
                 : `<span class="jira-badge" style="background:#666;">manual</span>`;
 
             const columnBadge = task._col_name

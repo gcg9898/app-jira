@@ -339,7 +339,7 @@
 
             const jiraBadge = task.jira_key
                 ? `<span class="jira-badge">${escapeHtml(task.jira_key)}</span>
-                   <a href="https://jiraitsm.eulen.com/browse/${escapeHtml(task.jira_key)}" target="_blank"
+                   <a href="${escapeHtml(task.jira_url || ('https://jiraitsm.eulen.com/browse/' + task.jira_key))}" target="_blank"
                       style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>`
                 : "";
 
