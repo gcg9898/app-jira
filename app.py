@@ -1038,7 +1038,43 @@ def _instance_public(row):
     """Serializa una instancia sin exponer la contraseña."""
     d = dict(row)
     d["has_password"] = bool(d.pop("password", "") or "")
+    d["is_cloud"] = _is_cloud(d.get("base_url"))
     return d
+
+
+def _is_cloud(base_url):
+    """Jira Cloud (*.atlassian.net) requiere email + API token y no tiene login.jsp."""
+    return ".atlassian.net" in (base_url or "").lower()
+
+
+def _normalize_jira_url(raw):
+    """Deja solo la raíz del Jira a partir de lo que pegue el usuario.
+
+    Pegar la URL del navegador (…/jira/software/c/projects/EUL/list?jql=…) hacía
+    que al concatenar '/rest/api/2/…' saliera una ruta inexistente y el servidor
+    devolviera el HTML de la SPA en lugar de JSON.
+    """
+    from urllib.parse import urlparse
+    txt = (raw or "").strip()
+    if not txt:
+        return ""
+    if not txt.startswith(("http://", "https://")):
+        txt = "https://" + txt
+    try:
+        p = urlparse(txt)
+    except Exception:
+        return txt.rstrip("/")
+    if not p.netloc:
+        return txt.rstrip("/")
+    root = f"{p.scheme}://{p.netloc}"
+    if _is_cloud(root):
+        return root
+    ui_paths = {"browse", "secure", "issues", "projects", "jira", "plugins",
+                "rest", "login.jsp", "servicedesk", "wiki", "software"}
+    seg = [s for s in p.path.split("/") if s]
+    if seg and seg[0].lower() not in ui_paths:
+        return f"{root}/{seg[0]}"
+    return root
 
 
 def get_jira_sources(conn):
@@ -1079,7 +1115,7 @@ def list_jira_instances():
 def create_jira_instance():
     data = request.json or {}
     name = (data.get("name") or "").strip()
-    base_url = (data.get("base_url") or "").strip().rstrip("/")
+    base_url = _normalize_jira_url(data.get("base_url"))
     if not name or not base_url:
         return jsonify({"error": "Nombre y URL son obligatorios"}), 400
     conn = get_db()
@@ -1117,7 +1153,7 @@ def update_jira_instance(inst_id):
             """UPDATE jira_instances SET name=?, base_url=?, username=?, password=?,
                color=?, enabled=? WHERE id=?""",
             ((data.get("name") or row["name"]).strip(),
-             (data.get("base_url") or row["base_url"]).strip().rstrip("/"),
+             _normalize_jira_url(data.get("base_url") or row["base_url"]),
              data.get("username", row["username"]),
              password,
              data.get("color") or row["color"],
@@ -1557,13 +1593,21 @@ def _take_screenshots_background(jobs):
     chunks = []
     for job in jobs:
         keys = job["keys"]
+        inst = job["instance"]
         if not keys:
+            continue
+        # Jira Cloud no tiene login.jsp: el flujo de Selenium (usuario/password
+        # en formulario) no aplica y ademas el acceso va por id.atlassian.com.
+        # Se omiten sus capturas en vez de dejar que el worker falle.
+        if _is_cloud(inst.get("base_url")):
+            print(f"  Screenshots omitidas para {inst.get('name')}: Jira Cloud no soporta login por formulario")
+            _sync_progress["done"] += len(keys)
             continue
         n = min(4, math.ceil(len(keys) / 5)) or 1
         for i in range(n):
             part = keys[i::n]
             if part:
-                chunks.append((job["instance"], part))
+                chunks.append((inst, part))
 
     if not chunks:
         _sync_progress["phase"] = "done"

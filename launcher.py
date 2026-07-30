@@ -216,6 +216,47 @@ def delete_filter_db(filt_id):
     conn.close()
 
 
+def is_cloud_url(base_url):
+    """Jira Cloud (*.atlassian.net) se comporta distinto que Server/DC."""
+    return ".atlassian.net" in (base_url or "").lower()
+
+
+def normalize_jira_url(raw):
+    """Extrae la raiz del Jira de lo que pegue el usuario.
+
+    Es habitual pegar la URL del navegador, p.ej.
+      https://eulenjira.atlassian.net/jira/software/c/projects/EUL/list?jql=...
+    Si se usara tal cual, al concatenar '/rest/api/2/...' sale una ruta absurda
+    y el servidor devuelve el HTML de la SPA en vez de JSON.
+    """
+    from urllib.parse import urlparse
+    txt = (raw or "").strip()
+    if not txt:
+        return ""
+    if not txt.startswith(("http://", "https://")):
+        txt = "https://" + txt
+    try:
+        p = urlparse(txt)
+    except Exception:
+        return txt.rstrip("/")
+    if not p.netloc:
+        return txt.rstrip("/")
+    root = f"{p.scheme}://{p.netloc}"
+
+    # En Cloud la raiz es siempre el host; cualquier ruta es interfaz.
+    if is_cloud_url(root):
+        return root
+
+    # En Server/DC puede haber un context path real (https://host/jira).
+    # Se conserva solo el primer segmento y solo si no es una ruta de la UI.
+    ui_paths = {"browse", "secure", "issues", "projects", "jira", "plugins",
+                "rest", "login.jsp", "servicedesk", "wiki", "software"}
+    seg = [s for s in p.path.split("/") if s]
+    if seg and seg[0].lower() not in ui_paths:
+        return f"{root}/{seg[0]}"
+    return root
+
+
 def test_instance_conn(base_url, username, password):
     """Valida credenciales contra /rest/api/2/myself. Devuelve (ok, mensaje).
 
@@ -231,7 +272,11 @@ def test_instance_conn(base_url, username, password):
 
     if not base_url:
         return False, "La instancia no tiene URL configurada."
-    url = base_url.rstrip("/") + "/rest/api/2/myself"
+    root = normalize_jira_url(base_url)
+    aviso = ""
+    if root != (base_url or "").rstrip("/"):
+        aviso = f"  [OJO: la URL guardada era '{base_url}'; se ha usado la raiz '{root}'. Guardala corregida.]"
+    url = root + "/rest/api/2/myself"
     token = base64.b64encode(f"{username}:{password}".encode()).decode()
     req = Request(url, headers={
         "Authorization": f"Basic {token}",
@@ -255,10 +300,16 @@ def test_instance_conn(base_url, username, password):
         except Exception:
             body = ""
         if e.code in (401, 403):
-            return False, f"HTTP {e.code} - usuario o contrasena incorrectos. URL: {url}"
-        return False, f"HTTP {e.code} en {url}. Respuesta: {body}"
+            if is_cloud_url(root):
+                return False, (
+                    f"HTTP {e.code} - Jira Cloud NO admite usuario+contrasena. "
+                    f"Usa tu EMAIL como usuario y un API TOKEN como contrasena "
+                    f"(se genera en https://id.atlassian.com/manage-profile/security/api-tokens). "
+                    f"URL: {url}{aviso}")
+            return False, f"HTTP {e.code} - usuario o contrasena incorrectos. URL: {url}{aviso}"
+        return False, f"HTTP {e.code} en {url}. Respuesta: {body}{aviso}"
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}  [URL: {url}]"
+        return False, f"{type(e).__name__}: {e}  [URL: {url}]{aviso}"
 
     text = raw.decode("utf-8", "replace").strip()
     if not text:
@@ -272,17 +323,18 @@ def test_instance_conn(base_url, username, password):
         if es_html:
             return False, (
                 f"El servidor devolvio HTML en vez de JSON (HTTP {status}, {ctype}). "
-                f"Suele significar que la URL redirige a un portal de login/SSO, "
-                f"que no es la raiz del Jira, o que hay un proxy delante. "
-                f"URL final: {final_url} | Inicio de la respuesta: {inicio}")
+                f"Suele significar que la URL no es la raiz del Jira, que redirige "
+                f"a un portal de login/SSO, o que hay un proxy delante. "
+                f"URL final: {final_url}{aviso} | Inicio: {inicio}")
         return False, (
-            f"Respuesta no-JSON (HTTP {status}, {ctype}) desde {final_url}. "
+            f"Respuesta no-JSON (HTTP {status}, {ctype}) desde {final_url}{aviso}. "
             f"Inicio de la respuesta: {inicio}")
 
     if not isinstance(data, dict):
         return False, f"JSON inesperado (HTTP {status}): {str(data)[:200]}"
-    who = data.get("displayName") or data.get("name") or username
-    return True, f"Conectado como {who}"
+    who = data.get("displayName") or data.get("name") or data.get("emailAddress") or username
+    extra = "  (Jira Cloud)" if is_cloud_url(root) else ""
+    return True, f"Conectado como {who}{extra}{aviso}"
 
 
 def check_flask():
@@ -866,8 +918,14 @@ class JiraManagerDialog(tk.Toplevel):
                        activeforeground=FG, font=("Segoe UI", 9),
                        highlightthickness=0, borderwidth=0).grid(row=6, column=0, columnspan=2,
                                                                  sticky="w", pady=(8, 0))
+        tk.Label(self.right,
+                 text=("URL: solo la raiz (https://miempresa.atlassian.net).\n"
+                       "Jira Cloud (*.atlassian.net): usuario = tu EMAIL y\n"
+                       "contrasena = un API TOKEN, no la del usuario."),
+                 bg=BG, fg="#666", font=("Segoe UI", 8), justify="left").grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
         _btn(self.right, "Guardar", self.save_instance_ui, bg=ACCENT, fg=BG).grid(
-            row=7, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
     def show_filter(self, filt_id, blank=False, instance_id=None):
         self.clear_right()
@@ -935,12 +993,16 @@ class JiraManagerDialog(tk.Toplevel):
 
     def save_instance_ui(self):
         name = self.i_fields["name"].get().strip()
-        url = self.i_fields["base_url"].get().strip().rstrip("/")
+        url = normalize_jira_url(self.i_fields["base_url"].get())
         user = self.i_fields["username"].get().strip()
         pwd = self.i_pass.get()
         if not name or not url:
             messagebox.showwarning("Guardar", "Nombre y URL son obligatorios.", parent=self)
             return
+        # Se refleja la URL normalizada para que el usuario vea que se ha
+        # quedado solo con la raiz (suele pegar la URL del navegador).
+        self.i_fields["base_url"].delete(0, "end")
+        self.i_fields["base_url"].insert(0, url)
         # En alta la contraseña va tal cual; en edición, vacío = conservar
         password = pwd if (self.sel_id is None or pwd != "") else None
         new_id, err = save_instance(self.sel_id, name, url, user, password, self.i_enabled.get())
