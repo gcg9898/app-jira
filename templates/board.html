@@ -520,6 +520,33 @@
         }
         .filter-tag:hover { border-color: #16c79a; color: #16c79a; }
         .filter-tag.active { background: #16c79a; color: #0f0f23; border-color: #16c79a; }
+        /* Contador de incidencias sin resolver de cada categoria */
+        .filter-tag .cnt {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 0 5px;
+            border-radius: 8px;
+            background: #2a2a4a;
+            color: #ddd;
+            font-size: 0.66rem;
+            line-height: 1.45;
+        }
+        .filter-tag.active .cnt { background: rgba(15,15,35,.25); color: #0f0f23; }
+        .filter-tag.vacia { opacity: .55; }
+        /* Categoria dentro de la tarjeta: mismo concepto que la barra de arriba,
+           por eso al pulsarla se filtra el tablero por ella. */
+        .task-cat {
+            display: inline-block;
+            padding: 1px 7px;
+            border-radius: 10px;
+            background: #23233d;
+            border: 1px solid #33335a;
+            color: #9fb8d6;
+            font-size: 0.68rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .task-cat:hover { border-color: #16c79a; color: #16c79a; }
 
         /* Toast */
         .toast {
@@ -900,26 +927,18 @@
         </div>
     </div>
 
-    <!-- Modal gestión de instancias y filtros de Jira -->
+    <!-- Modal para elegir que filtros de Jira se representan en el tablero -->
     <div class="col-filter-overlay" id="jiraOverlay">
         <div class="col-filter-modal jira-modal">
-            <h3>Instancias de Jira</h3>
+            <h3>Filtros de Jira</h3>
             <p class="jira-hint">
-                Cada instancia es un servidor de Jira con sus credenciales. Dentro de cada una
-                puedes añadir todos los filtros que quieras: la sincronización los recorre todos
-                y vuelca las incidencias al mismo tablero.
+                Marca los filtros cuyas incidencias quieres ver en el tablero. Los que
+                desmarques dejan de sincronizarse.
+                <br><br>
+                Dar de alta Jiras, cambiar credenciales o crear filtros se hace desde el
+                panel de escritorio (JiraBoard), no desde aquí.
             </p>
             <div id="jiraInstanceList"></div>
-            <div class="jira-new-instance">
-                <h4>Añadir instancia</h4>
-                <div class="jira-grid">
-                    <input type="text" id="jiraNewName" placeholder="Nombre (ej. ITSM Eulen)">
-                    <input type="text" id="jiraNewUrl" placeholder="https://jira.miempresa.com">
-                    <input type="text" id="jiraNewUser" placeholder="Usuario">
-                    <input type="password" id="jiraNewPass" placeholder="Contraseña">
-                </div>
-                <button class="btn btn-primary" onclick="createInstance()" style="margin-top:8px;">+ Añadir instancia</button>
-            </div>
             <div class="col-filter-actions">
                 <button class="btn btn-secondary" onclick="closeJiraModal()">Cerrar</button>
                 <button class="btn btn-primary" onclick="closeJiraModal(); syncJira();">Cerrar y sincronizar</button>
@@ -961,23 +980,18 @@
             await loadJiraInstances();
             const box = document.getElementById("jiraInstanceList");
             if (!jiraInstances.length) {
-                box.innerHTML = `<p class="jira-hint">Todavía no hay ninguna instancia configurada.</p>`;
+                box.innerHTML = `<p class="jira-hint">Todavía no hay ningún Jira configurado.
+                                 Añádelo desde el panel de escritorio.</p>`;
                 return;
             }
+            // Solo lectura salvo el interruptor de cada filtro: el resto de la
+            // configuración vive en el panel de escritorio.
             box.innerHTML = jiraInstances.map(inst => `
                 <div class="jira-instance ${inst.enabled ? "" : "disabled"}" style="border-left-color:${inst.color}">
                     <div class="jira-instance-head">
                         <span class="name" style="color:${inst.color}">${escapeHtml(inst.name)}</span>
-                        <span class="url">${escapeHtml(inst.base_url)}</span>
-                        <span class="spacer"></span>
-                        <button class="btn-mini" onclick="toggleInstance(${inst.id}, ${inst.enabled ? 0 : 1})">
-                            ${inst.enabled ? "Desactivar" : "Activar"}
-                        </button>
-                        <button class="btn-mini" onclick="testInstance(${inst.id})">Probar</button>
-                        <button class="btn-mini" onclick="editInstanceCreds(${inst.id})">Credenciales</button>
-                        <button class="btn-mini danger" onclick="deleteInstance(${inst.id})">Eliminar</button>
+                        ${inst.enabled ? "" : `<span class="url">(desactivado)</span>`}
                     </div>
-                    <div class="jira-test-result" id="jiraTest${inst.id}"></div>
                     <div class="jira-filters">
                         ${inst.filters.length ? inst.filters.map(f => `
                             <div class="jira-filter">
@@ -985,115 +999,11 @@
                                        onchange="toggleFilter(${f.id}, this.checked)">
                                 <span class="fname">${escapeHtml(f.name)}</span>
                                 <code>${f.filter_id ? "filter=" + escapeHtml(f.filter_id) : escapeHtml(f.jql)}</code>
-                                <button class="btn-mini danger" onclick="deleteFilter(${f.id})">✕</button>
                             </div>
                         `).join("") : `<div class="jira-filter" style="color:#777">Sin filtros: esta instancia no se sincroniza.</div>`}
-                        <div class="jira-filter-add">
-                            <input type="text" id="fname${inst.id}" placeholder="Nombre del filtro">
-                            <input type="text" id="fid${inst.id}" placeholder="ID (ej. 30004) o JQL"
-                                   onkeydown="if(event.key==='Enter')addFilter(${inst.id})">
-                            <button class="btn-mini" onclick="addFilter(${inst.id})">+ Filtro</button>
-                        </div>
                     </div>
                 </div>
             `).join("");
-        }
-
-        async function createInstance() {
-            const name = document.getElementById("jiraNewName").value.trim();
-            const base_url = document.getElementById("jiraNewUrl").value.trim();
-            if (!name || !base_url) return showToast("Nombre y URL son obligatorios", true);
-            const r = await fetch("/api/jira-instances", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    name, base_url,
-                    username: document.getElementById("jiraNewUser").value,
-                    password: document.getElementById("jiraNewPass").value
-                })
-            });
-            const d = await r.json();
-            if (!r.ok) return showToast(d.error || "Error", true);
-            ["jiraNewName", "jiraNewUrl", "jiraNewUser", "jiraNewPass"].forEach(id => document.getElementById(id).value = "");
-            showToast("Instancia añadida");
-            renderJiraInstances();
-        }
-
-        async function toggleInstance(id, enabled) {
-            await fetch(`/api/jira-instances/${id}`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ enabled: !!enabled })
-            });
-            renderJiraInstances();
-        }
-
-        async function editInstanceCreds(id) {
-            const inst = jiraInstances.find(i => i.id === id);
-            const username = prompt(`Usuario para ${inst.name}:`, inst.username || "");
-            if (username === null) return;
-            const password = prompt(`Contraseña para ${inst.name}:\n(vacío = no cambiar)`, "");
-            if (password === null) return;
-            // Si se deja vacío no se manda el campo: el backend conserva la actual
-            const body = { username };
-            if (password !== "") body.password = password;
-            await fetch(`/api/jira-instances/${id}`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body)
-            });
-            showToast("Credenciales actualizadas");
-            renderJiraInstances();
-        }
-
-        async function deleteInstance(id) {
-            const inst = jiraInstances.find(i => i.id === id);
-            if (!confirm(`¿Eliminar la instancia "${inst.name}"?\n\nLas tarjetas ya importadas se conservan, pero dejarán de sincronizarse y perderán el enlace a Jira.`)) return;
-            await fetch(`/api/jira-instances/${id}`, { method: "DELETE" });
-            showToast("Instancia eliminada");
-            renderJiraInstances();
-        }
-
-        async function testInstance(id) {
-            const box = document.getElementById(`jiraTest${id}`);
-            box.className = "jira-test-result";
-            box.textContent = "Probando conexión...";
-            const r = await fetch(`/api/jira-instances/${id}/test`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({})
-            });
-            const d = await r.json();
-            if (d.ok) {
-                box.className = "jira-test-result ok";
-                box.textContent = `Conectado como ${d.user}`;
-            } else {
-                box.className = "jira-test-result err";
-                box.textContent = d.error || "No se pudo conectar";
-            }
-        }
-
-        async function addFilter(instId) {
-            const nameEl = document.getElementById(`fname${instId}`);
-            const idEl = document.getElementById(`fid${instId}`);
-            const raw = idEl.value.trim();
-            if (!raw) return showToast("Indica el ID del filtro o una JQL", true);
-            // Sólo dígitos => es un ID de filtro; cualquier otra cosa se trata como JQL
-            const isNumeric = /^\d+$/.test(raw);
-            const r = await fetch("/api/jira-filters", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    instance_id: instId,
-                    name: nameEl.value.trim(),
-                    filter_id: isNumeric ? raw : "",
-                    jql: isNumeric ? "" : raw
-                })
-            });
-            const d = await r.json();
-            if (!r.ok) return showToast(d.error || "Error", true);
-            showToast("Filtro añadido");
-            renderJiraInstances();
         }
 
         async function toggleFilter(id, enabled) {
@@ -1102,12 +1012,6 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ enabled })
             });
-            renderJiraInstances();
-        }
-
-        async function deleteFilter(id) {
-            if (!confirm("¿Eliminar este filtro?")) return;
-            await fetch(`/api/jira-filters/${id}`, { method: "DELETE" });
             renderJiraInstances();
         }
 
@@ -1134,16 +1038,59 @@
             loadBoard();
         }
 
+        // Estados que cuentan como "resuelta". Se sacan de la columna que el
+        // usuario haya configurado como Hecho, para no depender de nombres fijos.
+        function resolvedStates() {
+            const done = boardData.find(c => (c.name || "").toLowerCase() === "hecho");
+            const etiquetas = (done && done.filter_labels) || [];
+            return { colId: done ? done.id : null,
+                     labels: new Set(etiquetas.map(l => l.toLowerCase())) };
+        }
+
+        function isUnresolved(task, resueltos) {
+            if (task.column_id === resueltos.colId) return false;
+            if (task.jira_status && resueltos.labels.has(task.jira_status.toLowerCase())) return false;
+            return true;
+        }
+
+        // La categoria sale del campo configurado en el filtro (jira_category).
+        // Si ese campo no esta configurado, el backend deja ahi las etiquetas,
+        // asi que el comportamiento de siempre se mantiene.
+        function taskCategories(task) {
+            const bruto = task.jira_category || "";
+            return bruto.split(",").map(c => c.trim()).filter(Boolean);
+        }
+
         function renderFilterBar() {
             const bar = document.getElementById("filterBar");
-            const allLabels = new Set();
+            const resueltos = resolvedStates();
+            // Por categoria: cuantas hay en total y cuantas siguen sin resolver.
+            const conteo = new Map();
+            let sinResolverTotal = 0;
             boardData.forEach(col => col.tasks.forEach(t => {
-                if (t.labels) t.labels.split(",").forEach(l => { const lt = l.trim(); if (lt) allLabels.add(lt); });
+                const pendiente = isUnresolved(t, resueltos);
+                if (pendiente) sinResolverTotal++;
+                taskCategories(t).forEach(cat => {
+                    const d = conteo.get(cat) || { total: 0, abiertas: 0 };
+                    d.total++;
+                    if (pendiente) d.abiertas++;
+                    conteo.set(cat, d);
+                });
             }));
-            const sorted = [...allLabels].sort();
+
+            // Orden: mas incidencias sin resolver primero; a igualdad, alfabetico.
+            const ordenadas = [...conteo.entries()].sort((a, b) =>
+                b[1].abiertas - a[1].abiertas || a[0].localeCompare(b[0], "es"));
+
             bar.innerHTML = `<label>🏷 Filtrar:</label>
-                <span class="filter-tag ${activeFilter === '' ? 'active' : ''}" onclick="setFilter('')">Todas</span>
-                ${sorted.map(l => `<span class="filter-tag ${activeFilter === l ? 'active' : ''}" onclick="setFilter('${escapeHtml(l)}')">${escapeHtml(l)}</span>`).join("")}`;
+                <span class="filter-tag ${activeFilter === '' ? 'active' : ''}" onclick="setFilter('')"
+                      title="Todas las categorías">Todas<span class="cnt">${sinResolverTotal}</span></span>
+                ${ordenadas.map(([cat, d]) => `
+                    <span class="filter-tag ${activeFilter === cat ? 'active' : ''} ${d.abiertas === 0 ? 'vacia' : ''}"
+                          onclick="setFilter('${escapeHtml(cat).replace(/'/g, "\\'")}')"
+                          title="${d.abiertas} sin resolver de ${d.total} en total">
+                        ${escapeHtml(cat)}<span class="cnt">${d.abiertas}</span>
+                    </span>`).join("")}`;
         }
 
         function setFilter(label) {
@@ -1175,9 +1122,10 @@
                 colEl.dataset.colId = col.id;
 
                 let tasks = col.tasks;
-                // Apply global filter (labels)
+                // Filtro global por categoria
                 if (activeFilter) {
-                    tasks = tasks.filter(t => t.labels && t.labels.toLowerCase().includes(activeFilter.toLowerCase()));
+                    tasks = tasks.filter(t => taskCategories(t).some(
+                        c => c.toLowerCase() === activeFilter.toLowerCase()));
                 }
                 // Apply per-column jira_status filters
                 const colFilters = col.filter_labels || [];
@@ -1293,7 +1241,7 @@
                         <span class="priority-badge ${priorityClass}" onclick="openPriorityDropdown(event, ${task.id})">${task.priority || 'Normal'}</span>
                         ${task.priority_override ? `<button onclick="resetPriority(event, ${task.id})" title="Has cambiado la prioridad manualmente. Pulsa para volver a la prioridad original de Jira (${escapeHtml(task.priority)})" style="background:none;border:none;color:#888;cursor:pointer;font-size:0.7rem;padding:0 2px;">↩</button>` : ""}
                         ${task.column_override ? `<button onclick="resetColumn(event, ${task.id})" title="Has movido esta tarjeta de columna manualmente. Pulsa para devolverla a la columna que le corresponde según su estado en Jira" style="background:none;border:none;color:#e8a838;cursor:pointer;font-size:0.7rem;padding:0 2px;">⇄</button>` : ""}
-                        ${task.labels ? `<span style="font-size:0.7rem;color:#888">🏷 ${escapeHtml(task.labels)}</span>` : ""}
+                        ${taskCategories(task).map(c => `<span class="task-cat" title="Filtrar por ${escapeHtml(c)}" onclick="event.stopPropagation(); setFilter('${escapeHtml(c).replace(/'/g, "\\'")}')">${escapeHtml(c)}</span>`).join("")}
                         ${totalTickets > 0 ? `<span style="font-size:0.7rem;color:#888">☑ ${doneCount}/${totalTickets}</span>` : ""}
                     </div>
                     ${envChecksHtml}

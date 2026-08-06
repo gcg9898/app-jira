@@ -5,12 +5,67 @@ JIRABOARD - CHANGELOG
 ⚠️  ACTUALIZACIÓN IMPORTANTE — Si no actualizas, las screenshots
     y las columnas en "Nueva Tarea" no funcionarán correctamente.
 
+[pendiente] 2026-08-06
+─────────────────────
+COMPATIBILIDAD CON JIRA CLOUD (*.atlassian.net)
+- Se puede sincronizar contra Jira Cloud además de Jira Server/DC, y los dos a
+  la vez. Cada instancia usa la API que le corresponde
+- Atlassian eliminó el endpoint de búsqueda que usaba la app (devolvía "410
+  Gone"), así que contra Cloud no llegaba ninguna incidencia. Ahora se usa el
+  endpoint nuevo, que pagina por cursor en lugar de por posición
+- Las descripciones y comentarios de Cloud llegan en formato ADF (un JSON, no
+  texto). Se convierten a texto plano para que se vean bien en las tarjetas
+- Los errores de Jira muestran el motivo real que devuelve el servidor, en vez
+  de solo el código HTTP
+- En Cloud, el usuario es el EMAIL y la credencial un API TOKEN. Si se pone la
+  contraseña de la cuenta, Jira responde 401: el mensaje ahora lo explica
+
+SCREENSHOTS EN JIRA CLOUD
+- Antes se omitían: el login por formulario que usa Selenium no existe en Cloud
+  (el acceso va por SSO/MFA). Ahora se pide la incidencia ya renderizada por la
+  propia API y se captura eso, sin abrir sesión en el navegador
+- La captura se ajusta al alto real del contenido: antes salía cortada o con
+  una franja enorme en blanco
+- Con varios Jira, la captura de una incidencia ya no se asigna a la del otro
+  Jira cuando comparten clave (p.ej. EUL-1 en ambos)
+
+CONFIGURACIÓN SOLO EN EL PANEL DE ESCRITORIO
+- Desde la web ya NO se configuran Jiras: sólo se activan y desactivan los
+  filtros, para elegir qué se representa en el tablero
+- Dar de alta instancias, cambiar credenciales, crear o borrar filtros se hace
+  únicamente desde el panel de escritorio (esto sustituye a lo que hacía el
+  botón "🔗 Jira" de la versión anterior)
+
+PANEL DE ESCRITORIO
+- El campo de credencial se adapta al Jira: pone "API token" en Cloud y
+  "Contraseña" en Server/DC, y cambia al teclear la URL
+- Casilla "Ver" para comprobar el token pegado, y enlace directo a la página
+  donde se genera
+- Botón "?" con un tutorial paso a paso para crear el API token
+- Nuevo desplegable "Campo estado": permite leer el estado de un campo propio
+  cuando el flujo real del proyecto no va en el "status" de Jira
+- Nuevo desplegable "Campo categoría": elige de qué campo sale la categoría con
+  la que se agrupa el tablero
+- Botón "Cargar campos" que lista todos los campos de incidencia del Jira, con
+  su id, para poder identificar los custom fields
+
+CATEGORÍAS EN EL TABLERO
+- La barra de "Filtrar" pasa de listar etiquetas a listar categorías
+- Cada categoría muestra cuántas incidencias tiene SIN RESOLVER, y se ordenan de
+  más a menos. Las que no tienen ninguna pendiente quedan atenuadas al final
+- "Sin resolver" se calcula con los estados que tengas configurados en tu
+  columna "Hecho", no con nombres fijos
+- Cada tarjeta muestra su categoría, y al pulsarla se filtra el tablero por ella
+- Si un filtro no tiene campo de categoría configurado, se siguen usando sus
+  etiquetas de Jira, como hasta ahora
+
 [pendiente] 2026-07-29
 ─────────────────────
 - MULTI-JIRA: se pueden configurar varias instancias de Jira y varios filtros
   en cada una. La sincronización las recorre todas y vuelca al mismo tablero
-- Nuevo botón "🔗 Jira" en la barra superior para gestionar instancias y filtros
-  (añadir, activar/desactivar, probar conexión, editar credenciales, eliminar)
+- Nuevo botón "🔗 Jira" en la barra superior para elegir qué filtros se
+  representan en el tablero (la gestión de instancias y credenciales se hace
+  desde el panel de escritorio, ver 2026-08-06)
 - Los filtros aceptan tanto un ID numérico como una JQL libre
 - Las tarjetas muestran una etiqueta de color con el Jira de origen cuando hay
   más de una instancia configurada

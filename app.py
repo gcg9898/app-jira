@@ -233,6 +233,13 @@ def migrate_db():
         conn.execute("ALTER TABLE tasks ADD COLUMN jira_oleada TEXT DEFAULT ''")
     if "custom_title" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN custom_title TEXT DEFAULT ''")
+    # Categoria con la que se agrupa el tablero. Sale del campo configurado en
+    # el filtro; si no hay ninguno, se dejan las etiquetas de Jira.
+    if "jira_category" not in cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN jira_category TEXT DEFAULT ''")
+        # Las tareas ya importadas heredan sus etiquetas como categoria, para
+        # que la barra de filtros no aparezca vacia hasta la siguiente sync.
+        conn.execute("UPDATE tasks SET jira_category = COALESCE(labels, '')")
     # Origen de la tarea: qué instancia de Jira y qué filtro la trajeron.
     # NULL en tareas manuales y en las que existían antes de la multi-instancia
     # (esas se reasignan a la instancia por defecto en _seed_jira_config).
@@ -325,6 +332,16 @@ def migrate_db():
             FOREIGN KEY (instance_id) REFERENCES jira_instances(id) ON DELETE CASCADE
         )
     """)
+    # Campo de la incidencia del que se lee el estado. Vacio = 'status' estandar.
+    # Permite usar un custom field cuando el flujo real del proyecto no se
+    # refleja en el status de Jira (se elige desde el panel de configuracion).
+    # category_field: campo del que sale la categoria con la que se agrupa y
+    # filtra el tablero (vacio = se usan las etiquetas de Jira).
+    filt_cols = [row[1] for row in conn.execute("PRAGMA table_info(jira_filters)").fetchall()]
+    if "status_field" not in filt_cols:
+        conn.execute("ALTER TABLE jira_filters ADD COLUMN status_field TEXT DEFAULT ''")
+    if "category_field" not in filt_cols:
+        conn.execute("ALTER TABLE jira_filters ADD COLUMN category_field TEXT DEFAULT ''")
     _seed_jira_config(conn)
     conn.commit()
     conn.close()
@@ -1111,172 +1128,23 @@ def list_jira_instances():
     return jsonify(result)
 
 
-@app.route("/api/jira-instances", methods=["POST"])
-def create_jira_instance():
-    data = request.json or {}
-    name = (data.get("name") or "").strip()
-    base_url = _normalize_jira_url(data.get("base_url"))
-    if not name or not base_url:
-        return jsonify({"error": "Nombre y URL son obligatorios"}), 400
-    conn = get_db()
-    n = conn.execute("SELECT COUNT(*) FROM jira_instances").fetchone()[0]
-    try:
-        conn.execute(
-            """INSERT INTO jira_instances (name, base_url, username, password, color, enabled, position)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (name, base_url, data.get("username", ""), data.get("password", ""),
-             data.get("color") or INSTANCE_COLORS[n % len(INSTANCE_COLORS)],
-             1 if data.get("enabled", True) else 0, n)
-        )
-    except sqlite3.IntegrityError:
-        conn.close()
-        return jsonify({"error": f"Ya existe una instancia llamada '{name}'"}), 409
-    new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True, "id": new_id}), 201
-
-
-@app.route("/api/jira-instances/<int:inst_id>", methods=["PUT"])
-def update_jira_instance(inst_id):
-    data = request.json or {}
-    conn = get_db()
-    row = conn.execute("SELECT * FROM jira_instances WHERE id = ?", (inst_id,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "No existe"}), 404
-    # La contraseña solo se sobrescribe si viene en la petición: así la UI puede
-    # guardar cambios sin tener que reenviarla (nunca se envía al navegador).
-    password = data["password"] if "password" in data else row["password"]
-    try:
-        conn.execute(
-            """UPDATE jira_instances SET name=?, base_url=?, username=?, password=?,
-               color=?, enabled=? WHERE id=?""",
-            ((data.get("name") or row["name"]).strip(),
-             _normalize_jira_url(data.get("base_url") or row["base_url"]),
-             data.get("username", row["username"]),
-             password,
-             data.get("color") or row["color"],
-             1 if data.get("enabled", row["enabled"]) else 0,
-             inst_id)
-        )
-    except sqlite3.IntegrityError:
-        conn.close()
-        return jsonify({"error": "Ya existe otra instancia con ese nombre"}), 409
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/jira-instances/<int:inst_id>", methods=["DELETE"])
-def delete_jira_instance(inst_id):
-    conn = get_db()
-    # Las tareas importadas se conservan; solo pierden el vínculo con el origen.
-    conn.execute(
-        "UPDATE tasks SET jira_instance_id = NULL, jira_filter_id = NULL WHERE jira_instance_id = ?",
-        (inst_id,)
-    )
-    conn.execute("DELETE FROM jira_instances WHERE id = ?", (inst_id,))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/jira-instances/<int:inst_id>/test", methods=["POST"])
-def test_jira_instance(inst_id):
-    """Comprueba credenciales y, si se indica un filtro, que devuelve resultados."""
-    data = request.json or {}
-    conn = get_db()
-    inst = conn.execute("SELECT * FROM jira_instances WHERE id = ?", (inst_id,)).fetchone()
-    conn.close()
-    if not inst:
-        return jsonify({"error": "No existe"}), 404
-    session = req_lib.Session()
-    session.auth = (inst["username"], inst["password"])
-    session.verify = False
-    session.headers.update({"Accept": "application/json"})
-    is_cloud = _is_cloud(inst["base_url"])
-    try:
-        resp = session.get(f"{inst['base_url']}/rest/api/2/myself", timeout=15)
-        if resp.status_code != 200:
-            hint = (" Con Jira Cloud el usuario es tu email y la contraseña un "
-                    "API token de id.atlassian.com.") if is_cloud else ""
-            return jsonify({"ok": False,
-                            "error": f"Autenticación fallida ({resp.status_code})." + hint})
-        who = resp.json().get("displayName") or resp.json().get("name", "")
-        result = {"ok": True, "user": who, "is_cloud": is_cloud}
-        jql = _filter_jql({"filter_id": data.get("filter_id", ""), "jql": data.get("jql", "")})
-        if jql:
-            if is_cloud:
-                # El contador clásico (search?maxResults=0) ya no existe en Cloud.
-                r2 = session.post(f"{inst['base_url']}/rest/api/3/search/approximate-count",
-                                  json={"jql": jql}, timeout=20)
-                total_key = "count"
-            else:
-                r2 = session.get(f"{inst['base_url']}/rest/api/2/search",
-                                 params={"jql": jql, "maxResults": 0}, timeout=20)
-                total_key = "total"
-            if r2.status_code != 200:
-                result["filter_error"] = _jira_error(r2, inst["base_url"])
-            else:
-                result["issues"] = r2.json().get(total_key, 0)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
-
-
-@app.route("/api/jira-filters", methods=["POST"])
-def create_jira_filter():
-    data = request.json or {}
-    instance_id = data.get("instance_id")
-    name = (data.get("name") or "").strip()
-    filter_id = (data.get("filter_id") or "").strip()
-    jql = (data.get("jql") or "").strip()
-    if not instance_id or not (filter_id or jql):
-        return jsonify({"error": "Indica el ID de filtro o una JQL"}), 400
-    conn = get_db()
-    if not conn.execute("SELECT 1 FROM jira_instances WHERE id = ?", (instance_id,)).fetchone():
-        conn.close()
-        return jsonify({"error": "La instancia no existe"}), 404
-    n = conn.execute("SELECT COUNT(*) FROM jira_filters WHERE instance_id = ?", (instance_id,)).fetchone()[0]
-    conn.execute(
-        """INSERT INTO jira_filters (instance_id, name, filter_id, jql, enabled, position)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (instance_id, name or (f"Filtro {filter_id}" if filter_id else "JQL"),
-         filter_id, jql, 1 if data.get("enabled", True) else 0, n)
-    )
-    new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True, "id": new_id}), 201
-
-
 @app.route("/api/jira-filters/<int:filt_id>", methods=["PUT"])
 def update_jira_filter(filt_id):
+    """Solo permite activar/desactivar el filtro.
+
+    Toda la configuracion (instancias, credenciales, alta y borrado de filtros,
+    campos de estado y categoria) vive unicamente en el panel de escritorio, que
+    escribe directo en board.db. Desde la web solo se elige que se representa en
+    el tablero y que no, asi que aqui se ignora cualquier otro campo que llegue.
+    """
     data = request.json or {}
     conn = get_db()
     row = conn.execute("SELECT * FROM jira_filters WHERE id = ?", (filt_id,)).fetchone()
     if not row:
         conn.close()
         return jsonify({"error": "No existe"}), 404
-    conn.execute(
-        "UPDATE jira_filters SET name=?, filter_id=?, jql=?, enabled=? WHERE id=?",
-        ((data.get("name") or row["name"]).strip(),
-         data.get("filter_id", row["filter_id"]).strip(),
-         data.get("jql", row["jql"]).strip(),
-         1 if data.get("enabled", row["enabled"]) else 0,
-         filt_id)
-    )
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
-@app.route("/api/jira-filters/<int:filt_id>", methods=["DELETE"])
-def delete_jira_filter(filt_id):
-    conn = get_db()
-    conn.execute("UPDATE tasks SET jira_filter_id = NULL WHERE jira_filter_id = ?", (filt_id,))
-    conn.execute("DELETE FROM jira_filters WHERE id = ?", (filt_id,))
+    conn.execute("UPDATE jira_filters SET enabled=? WHERE id=?",
+                 (1 if data.get("enabled", row["enabled"]) else 0, filt_id))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -1350,7 +1218,49 @@ def _adf_to_text(value):
     return inner
 
 
-def _fetch_issues_cloud(session, base_url, jql):
+def _filter_status_field(filt):
+    """Campo del que leer el estado en este filtro ('' = el 'status' estandar)."""
+    return _filter_field(filt, "status_field")
+
+
+def _filter_category_field(filt):
+    """Campo del que leer la categoria ('' = se usan las etiquetas de Jira)."""
+    return _filter_field(filt, "category_field")
+
+
+def _filter_field(filt, nombre):
+    """Lee una columna opcional del filtro tolerando BD sin migrar."""
+    try:
+        valor = filt[nombre]
+    except (KeyError, IndexError):
+        return ""
+    return (valor or "").strip()
+
+
+def _field_status_text(value):
+    """Normaliza a texto el valor de un campo de Jira usado como estado.
+
+    Segun el tipo, Jira lo devuelve como cadena, como objeto ({name} en los
+    campos de sistema, {value} en los desplegables personalizados) o como lista
+    (multiseleccion), asi que hay que aplanarlo para poder casarlo con las
+    etiquetas de las columnas del tablero.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for clave in ("name", "value", "displayName", "key"):
+            if value.get(clave):
+                return str(value[clave]).strip()
+        return ""
+    if isinstance(value, list):
+        partes = [_field_status_text(v) for v in value]
+        return ", ".join(p for p in partes if p)
+    return str(value).strip()
+
+
+def _fetch_issues_cloud(session, base_url, jql, campos):
     """Descarga incidencias de Jira Cloud con el endpoint de busqueda nuevo.
 
     Atlassian retiro GET/POST /rest/api/2|3/search el 1 de mayo de 2025. El
@@ -1359,7 +1269,7 @@ def _fetch_issues_cloud(session, base_url, jql):
     token. El limite de paginas evita un bucle infinito si el token se repitiera.
     """
     issues = []
-    payload = {"jql": jql, "maxResults": 100, "fields": SEARCH_FIELDS}
+    payload = {"jql": jql, "maxResults": 100, "fields": campos}
     for _ in range(200):
         resp = session.post(f"{base_url}/rest/api/3/search/jql",
                             json=payload, timeout=30)
@@ -1375,10 +1285,14 @@ def _fetch_issues_cloud(session, base_url, jql):
     return issues
 
 
-def _fetch_issues(session, base_url, jql, is_cloud=False):
+def _fetch_issues(session, base_url, jql, is_cloud=False, extra_fields=None):
     """Descarga todas las incidencias de una JQL paginando de 50 en 50."""
+    campos = list(SEARCH_FIELDS)
+    for extra in (extra_fields or []):
+        if extra and extra not in campos:
+            campos.append(extra)
     if is_cloud:
-        return _fetch_issues_cloud(session, base_url, jql)
+        return _fetch_issues_cloud(session, base_url, jql, campos)
     issues = []
     start_at = 0
     while True:
@@ -1388,7 +1302,7 @@ def _fetch_issues(session, base_url, jql, is_cloud=False):
                 "jql": jql,
                 "startAt": start_at,
                 "maxResults": 50,
-                "fields": ",".join(SEARCH_FIELDS),
+                "fields": ",".join(campos),
             },
             timeout=30,
         )
@@ -1438,7 +1352,9 @@ def sync_jira():
                 continue
             _sync_progress["phase_text"] = f"Obteniendo {inst['name']} / {filt['name']}..."
             try:
-                issues = _fetch_issues(session, inst["base_url"], jql, is_cloud)
+                issues = _fetch_issues(session, inst["base_url"], jql, is_cloud,
+                                       [_filter_status_field(filt),
+                                        _filter_category_field(filt)])
             except Exception as e:
                 errors.append(f"{inst['name']} / {filt['name']}: {e}")
                 continue
@@ -1488,9 +1404,22 @@ def sync_jira():
         key = issue["key"]
         fields = issue.get("fields", {})
         summary = fields.get("summary", key)
-        status = fields.get("status", {}).get("name", "")
+        # Cada filtro puede leer el estado de un campo propio: hay proyectos
+        # cuyo flujo real no se refleja en el 'status' de Jira.
+        campo_estado = _filter_status_field(filt)
+        if campo_estado and campo_estado != "status":
+            status = _field_status_text(fields.get(campo_estado))
+        else:
+            status = fields.get("status", {}).get("name", "")
         priority = fields.get("priority", {}).get("name", "Normal") if fields.get("priority") else "Normal"
         labels = ", ".join(fields.get("labels", []))
+        # Categoria del tablero: si el filtro no configura campo propio, se
+        # siguen usando las etiquetas de Jira como hasta ahora.
+        campo_categoria = _filter_category_field(filt)
+        if campo_categoria:
+            jira_category = _field_status_text(fields.get(campo_categoria))
+        else:
+            jira_category = labels
         desc = _adf_to_text(fields.get("description"))
         # Parse Jira updated date
         jira_updated_raw = fields.get("updated", "") or ""
@@ -1600,10 +1529,10 @@ def sync_jira():
                         (summary, desc, status, labels, last_comment, col_id, col_id, jira_updated, jira_created,
                          jira_due_date, jira_start_date, jira_oleada, now, existing["id"])
                     )
-            # El origen se actualiza aparte para no duplicar las cuatro variantes
-            # de UPDATE de arriba.
-            conn.execute("UPDATE tasks SET jira_instance_id=?, jira_filter_id=? WHERE id=?",
-                         (inst["id"], filt["id"], existing["id"]))
+            # El origen y la categoria se actualizan aparte para no duplicar las
+            # cuatro variantes de UPDATE de arriba.
+            conn.execute("UPDATE tasks SET jira_instance_id=?, jira_filter_id=?, jira_category=? WHERE id=?",
+                         (inst["id"], filt["id"], jira_category, existing["id"]))
         else:
             max_pos = conn.execute(
                 "SELECT COALESCE(MAX(position), -1) FROM tasks WHERE column_id = ?", (col_id,)
@@ -1611,11 +1540,11 @@ def sync_jira():
             conn.execute(
                 """INSERT INTO tasks (column_id, jira_column_id, title, description, jira_key, jira_status,
                    priority, labels, last_comment, jira_updated, jira_created, jira_due_date, jira_start_date, jira_oleada,
-                   jira_instance_id, jira_filter_id, position, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   jira_instance_id, jira_filter_id, jira_category, position, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (col_id, col_id, summary, desc, key, status, priority, labels, last_comment,
                  jira_updated, jira_created, jira_due_date, jira_start_date, jira_oleada,
-                 inst["id"], filt["id"], max_pos + 1, now, now)
+                 inst["id"], filt["id"], jira_category, max_pos + 1, now, now)
             )
             imported += 1
 
@@ -1689,17 +1618,18 @@ def _take_screenshots_background(jobs):
     import math
 
     chunks = []
+    cloud_jobs = []
     for job in jobs:
         keys = job["keys"]
         inst = job["instance"]
         if not keys:
             continue
-        # Jira Cloud no tiene login.jsp: el flujo de Selenium (usuario/password
-        # en formulario) no aplica y ademas el acceso va por id.atlassian.com.
-        # Se omiten sus capturas en vez de dejar que el worker falle.
+        # Jira Cloud no tiene login.jsp y el acceso va por id.atlassian.com con
+        # SSO/MFA, asi que el login por formulario de Selenium no sirve. En su
+        # lugar se pide la incidencia ya renderizada a HTML por la propia API
+        # (autenticada con el API token) y se captura ese HTML.
         if _is_cloud(inst.get("base_url")):
-            print(f"  Screenshots omitidas para {inst.get('name')}: Jira Cloud no soporta login por formulario")
-            _sync_progress["done"] += len(keys)
+            cloud_jobs.append((inst, keys))
             continue
         n = min(4, math.ceil(len(keys) / 5)) or 1
         for i in range(n):
@@ -1707,19 +1637,27 @@ def _take_screenshots_background(jobs):
             if part:
                 chunks.append((inst, part))
 
-    if not chunks:
+    if not chunks and not cloud_jobs:
         _sync_progress["phase"] = "done"
         _sync_progress["phase_text"] = "Completado"
         _sync_progress["running"] = False
         return
 
-    with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
-        futures = [executor.submit(_screenshot_worker, inst, part) for inst, part in chunks]
-        for f in as_completed(futures):
-            try:
-                f.result()
-            except Exception as e:
-                print(f"  Screenshot worker error: {e}")
+    if chunks:
+        with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
+            futures = [executor.submit(_screenshot_worker, inst, part) for inst, part in chunks]
+            for f in as_completed(futures):
+                try:
+                    f.result()
+                except Exception as e:
+                    print(f"  Screenshot worker error: {e}")
+
+    for inst, keys in cloud_jobs:
+        try:
+            _screenshot_worker_cloud(inst, keys)
+        except Exception as e:
+            print(f"  Screenshot cloud worker error: {e}")
+
     _sync_progress["phase"] = "done"
     _sync_progress["phase_text"] = "Completado"
     _sync_progress["running"] = False
@@ -1806,6 +1744,207 @@ def _screenshot_worker(instance, keys):
     finally:
         if driver:
             driver.quit()
+
+
+_CLOUD_SHOT_CSS = """
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px; width:1100px; background:#fff; color:#172b4d;
+         font-family:-apple-system,'Segoe UI',Roboto,Arial,sans-serif; font-size:14px; }
+  .key { font-size:13px; color:#5e6c84; letter-spacing:.04em; }
+  h1 { font-size:20px; margin:4px 0 14px; line-height:1.3; }
+  .meta { margin-bottom:18px; }
+  .chip { display:inline-block; background:#dfe1e6; color:#42526e; border-radius:3px;
+          padding:3px 8px; font-size:12px; font-weight:600; margin-right:6px; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:#5e6c84;
+       border-bottom:1px solid #dfe1e6; padding-bottom:6px; margin:22px 0 12px; }
+  .body { line-height:1.55; word-wrap:break-word; }
+  .body img { max-width:100%; }
+  .body pre { background:#f4f5f7; padding:10px; border-radius:3px; overflow-x:auto; }
+  .c { border-left:3px solid #dfe1e6; padding:2px 0 2px 12px; margin-bottom:16px; }
+  .c .who { font-weight:600; }
+  .c .when { color:#5e6c84; font-size:12px; margin-left:6px; }
+  .vacio { color:#5e6c84; font-style:italic; }
+"""
+
+
+def _cloud_shot_html(key, fields, rendered):
+    """Monta el HTML que se captura para una incidencia de Jira Cloud.
+
+    Se usa `renderedFields`, que es el mismo contenido que se ve en el navegador
+    pero ya convertido a HTML por Jira, de modo que no hay que interpretar ADF
+    ni abrir sesion en el navegador.
+    """
+    from html import escape
+
+    def _txt(v):
+        return escape(str(v)) if v else ""
+
+    summary = _txt(fields.get("summary", ""))
+    status = _txt((fields.get("status") or {}).get("name", ""))
+    priority = _txt((fields.get("priority") or {}).get("name", ""))
+    assignee = _txt((fields.get("assignee") or {}).get("displayName", ""))
+    updated = _txt(rendered.get("updated") or fields.get("updated", ""))
+
+    desc = rendered.get("description") or ""
+    if not desc:
+        desc = '<p class="vacio">Sin descripcion</p>'
+
+    # Los comentarios se pintan del mas antiguo al mas reciente, igual que la
+    # captura de Server (que fuerza actionOrder=asc), para que el ultimo quede
+    # abajo del todo.
+    comentarios = ((rendered.get("comment") or {}).get("comments")
+                   or (fields.get("comment") or {}).get("comments") or [])
+    trozos = []
+    for c in comentarios:
+        autor = _txt((c.get("author") or {}).get("displayName", ""))
+        cuando = _txt(c.get("created", ""))
+        cuerpo = c.get("body") or ""
+        if not isinstance(cuerpo, str):
+            cuerpo = escape(_adf_to_text(cuerpo)).replace("\n", "<br>")
+        trozos.append(f'<div class="c"><span class="who">{autor}</span>'
+                      f'<span class="when">{cuando}</span><div class="body">{cuerpo}</div></div>')
+    coms = "".join(trozos) or '<p class="vacio">Sin comentarios</p>'
+
+    chips = "".join(f'<span class="chip">{v}</span>'
+                    for v in (status, priority, assignee, updated) if v)
+
+    return f"""<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">
+<style>{_CLOUD_SHOT_CSS}</style></head><body>
+<div class="key">{escape(key)}</div>
+<h1>{summary}</h1>
+<div class="meta">{chips}</div>
+<h2>Descripcion</h2><div class="body">{desc}</div>
+<h2>Comentarios ({len(comentarios)})</h2>{coms}
+</body></html>"""
+
+
+def _save_full_page_png(driver, destino):
+    """Guarda la pagina entera, no solo lo que cabe en el viewport.
+
+    save_screenshot() de Chrome captura unicamente el viewport, asi que una
+    incidencia con varios comentarios salia cortada. Se agranda el viewport al
+    tamano real del documento con Emulation.setDeviceMetricsOverride y se
+    captura de una vez. Se evita a proposito el parametro `clip` de
+    captureScreenshot: combinado con captureBeyondViewport, Chrome re-renderiza
+    y la captura sale con el contenido repetido.
+    """
+    import base64
+
+    # El alto se mide sobre el propio <body>, no con scrollHeight ni con
+    # cssContentSize: esos dos devuelven como minimo el alto del viewport, asi
+    # que con una incidencia corta daban un lienzo de 2246px con el contenido
+    # perdido en medio de un mar de blanco.
+    medida = driver.execute_script("""
+        const b = document.body, cs = getComputedStyle(b);
+        const alto = b.getBoundingClientRect().height
+                   + parseFloat(cs.marginTop) + parseFloat(cs.marginBottom);
+        return [Math.ceil(alto), Math.ceil(b.getBoundingClientRect().width)];
+    """)
+    try:
+        alto, ancho = int(medida[0]), int(medida[1])
+    except (TypeError, ValueError, IndexError):
+        alto = ancho = 0
+
+    ancho = max(min(ancho or 1128, 2000), 800)
+    alto = max(min(alto or 800, 12000), 200)
+
+    try:
+        driver.execute_cdp_cmd("Emulation.setDeviceMetricsOverride", {
+            "width": ancho, "height": alto, "deviceScaleFactor": 1, "mobile": False,
+        })
+        try:
+            res = driver.execute_cdp_cmd("Page.captureScreenshot", {"format": "png"})
+            with open(destino, "wb") as fh:
+                fh.write(base64.b64decode(res["data"]))
+            return
+        finally:
+            driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
+    except Exception:
+        pass
+
+    # Fallback: la ventana se agranda al contenido y se captura el viewport.
+    driver.set_window_size(ancho, alto + 120)
+    driver.save_screenshot(str(destino))
+
+
+def _screenshot_worker_cloud(instance, keys):
+    """Capturas para Jira Cloud sin iniciar sesion en el navegador.
+
+    Se pide cada incidencia con expand=renderedFields (Jira devuelve el HTML ya
+    montado), se vuelca a un fichero temporal y se captura con Chrome headless.
+    Asi se evita el login por formulario, que en Cloud no existe.
+    """
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from datetime import datetime as _dt
+    import tempfile
+
+    def _log_error(msg):
+        try:
+            with open(SCREENSHOT_LOG, "a", encoding="utf-8") as f:
+                f.write(f"[{_dt.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
+        except Exception:
+            pass
+        print(f"  {msg}")
+
+    base_url = instance["base_url"].rstrip("/")
+    session = req_lib.Session()
+    session.auth = (instance["username"], instance["password"])
+    session.verify = False
+    session.headers.update({"Accept": "application/json"})
+
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1150,2400")
+    chrome_options.add_argument("--ignore-certificate-errors")
+    chrome_options.add_argument("--hide-scrollbars")
+
+    driver = None
+    tmpdir = None
+    try:
+        driver = webdriver.Chrome(options=chrome_options)
+        tmpdir = tempfile.mkdtemp(prefix="jiraboard_shot_")
+        conn = get_db()
+        for key in keys:
+            try:
+                resp = session.get(
+                    f"{base_url}/rest/api/2/issue/{key}",
+                    params={"expand": "renderedFields",
+                            "fields": "summary,status,priority,assignee,updated,description,comment"},
+                    timeout=30,
+                )
+                if resp.status_code != 200:
+                    raise RuntimeError(_jira_error(resp, base_url))
+                data = resp.json()
+                html = _cloud_shot_html(key, data.get("fields", {}),
+                                        data.get("renderedFields", {}))
+
+                html_path = os.path.join(tmpdir, f"{key}.html")
+                with open(html_path, "w", encoding="utf-8") as fh:
+                    fh.write(html)
+                driver.get("file:///" + html_path.replace("\\", "/"))
+                _save_full_page_png(driver, SCREENSHOTS_DIR / f"{key}.png")
+
+                screenshot_file = f"{key}.png"
+                conn.execute("UPDATE tasks SET screenshot=? WHERE jira_key=? AND jira_instance_id=?",
+                             (screenshot_file, key, instance["id"]))
+                conn.commit()
+                _sync_progress["done"] += 1
+                _sync_progress["current"] = key
+            except Exception as e:
+                _sync_progress["done"] += 1
+                _log_error(f"Screenshot cloud error for {key}: {e}")
+        conn.close()
+    except Exception as e:
+        _log_error(f"Screenshot cloud worker init error: {e}")
+    finally:
+        if driver:
+            driver.quit()
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -192,18 +192,43 @@ def delete_instance_db(inst_id):
     conn.close()
 
 
-def save_filter(filt_id, instance_id, name, filter_id, jql, enabled):
+def ensure_filter_columns():
+    """Anade columnas nuevas de jira_filters si la BD viene de una version previa.
+
+    El launcher puede abrirse antes de que Flask haya corrido su migracion, asi
+    que se asegura aqui en vez de dar por hecho que la columna existe.
+    """
+    try:
+        conn = jira_db()
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(jira_filters)").fetchall()]
+        if cols:
+            for nueva in ("status_field", "category_field"):
+                if nueva not in cols:
+                    conn.execute(f"ALTER TABLE jira_filters ADD COLUMN {nueva} TEXT DEFAULT ''")
+            conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def save_filter(filt_id, instance_id, name, filter_id, jql, enabled,
+                status_field="", category_field=""):
+    ensure_filter_columns()
     conn = jira_db()
     if filt_id:
-        conn.execute("UPDATE jira_filters SET name=?, filter_id=?, jql=?, enabled=? WHERE id=?",
-                     (name, filter_id, jql, 1 if enabled else 0, filt_id))
+        conn.execute(
+            """UPDATE jira_filters SET name=?, filter_id=?, jql=?, enabled=?,
+               status_field=?, category_field=? WHERE id=?""",
+            (name, filter_id, jql, 1 if enabled else 0, status_field, category_field, filt_id))
     else:
         n = conn.execute("SELECT COUNT(*) FROM jira_filters WHERE instance_id = ?",
                          (instance_id,)).fetchone()[0]
         conn.execute(
-            """INSERT INTO jira_filters (instance_id, name, filter_id, jql, enabled, position)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (instance_id, name, filter_id, jql, 1 if enabled else 0, n))
+            """INSERT INTO jira_filters (instance_id, name, filter_id, jql, enabled, position,
+                                        status_field, category_field)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (instance_id, name, filter_id, jql, 1 if enabled else 0, n,
+             status_field, category_field))
     conn.commit()
     conn.close()
 
@@ -335,6 +360,61 @@ def test_instance_conn(base_url, username, password):
     who = data.get("displayName") or data.get("name") or data.get("emailAddress") or username
     extra = "  (Jira Cloud)" if is_cloud_url(root) else ""
     return True, f"Conectado como {who}{extra}{aviso}"
+
+
+def fetch_issue_fields(base_url, username, password):
+    """Lista los campos de incidencia del Jira. Devuelve (lista, error).
+
+    Cada elemento es (id, etiqueta). Sirve para elegir de que campo se lee el
+    estado en cada filtro: hay proyectos donde el flujo real no va en 'status'
+    sino en un campo propio, y a ojo es imposible saber el id del custom field.
+    """
+    import json as _json
+    import base64
+    import ssl
+
+    root = normalize_jira_url(base_url)
+    if not root:
+        return [], "La instancia no tiene URL configurada."
+    url = root + "/rest/api/2/field"
+    tok = base64.b64encode(f"{username}:{password}".encode()).decode()
+    req = Request(url, headers={
+        "Authorization": f"Basic {tok}",
+        "Accept": "application/json",
+        "User-Agent": "JiraBoard-Launcher",
+    })
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with urlopen(req, timeout=20, context=ctx) as r:
+            raw = r.read()
+    except HTTPError as e:
+        return [], f"HTTP {e.code} al pedir los campos ({url})."
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+    try:
+        data = _json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return [], "El Jira no devolvio JSON al pedir los campos."
+    if not isinstance(data, list):
+        return [], "Respuesta inesperada al pedir los campos."
+
+    campos = []
+    for f in data:
+        fid = f.get("id") or f.get("key") or ""
+        if not fid:
+            continue
+        nombre = f.get("name") or fid
+        tipo = (f.get("schema") or {}).get("type", "")
+        marca = "custom" if f.get("custom") else "estandar"
+        etiqueta = f"{nombre}  [{fid}]  ({marca}{', ' + tipo if tipo else ''})"
+        campos.append((fid, etiqueta))
+    # Los mas probables para un estado primero, luego alfabetico.
+    preferentes = {"status", "resolution", "priority"}
+    campos.sort(key=lambda c: (c[0] not in preferentes, c[1].lower()))
+    return campos, None
 
 
 def check_flask():
@@ -703,6 +783,10 @@ FG_DIM = "#ccc"
 ACCENT = "#16c79a"
 BORDER = "#2a2a4a"
 
+# Opciones por defecto de los desplegables de campos.
+FIELD_DEFAULT_LABEL = "(status estandar de Jira)"
+CATEGORY_DEFAULT_LABEL = "(etiquetas de Jira)"
+
 
 def _entry(parent, width=34, show=None):
     return tk.Entry(parent, bg=BG, fg=FG, insertbackground=ACCENT,
@@ -912,7 +996,7 @@ class JiraManagerDialog(tk.Toplevel):
         self.i_secret_label.grid(row=4, column=0, sticky="w", pady=3)
         secret_box = tk.Frame(self.right, bg=BG)
         secret_box.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=3)
-        self.i_pass = _entry(secret_box, width=34, show="*")
+        self.i_pass = _entry(secret_box, width=30, show="*")
         self.i_pass.pack(side="left")
         self.i_show_secret = tk.BooleanVar(value=False)
         tk.Checkbutton(secret_box, text="Ver", variable=self.i_show_secret,
@@ -921,6 +1005,10 @@ class JiraManagerDialog(tk.Toplevel):
                        bg=BG, fg=FG_DIM, selectcolor=BG, activebackground=BG,
                        activeforeground=FG, font=("Segoe UI", 8),
                        highlightthickness=0, borderwidth=0).pack(side="left", padx=(6, 0))
+        self.i_help_btn = tk.Button(secret_box, text="?", command=self.show_token_help,
+                                    bg=BORDER, fg=ACCENT, font=("Segoe UI", 9, "bold"),
+                                    relief="flat", cursor="hand2", width=2, padx=0, pady=0)
+        self.i_help_btn.pack(side="left", padx=(4, 0))
         if not blank:
             tk.Label(self.right, text="(vacío = no cambiar la guardada)", bg=BG, fg="#666",
                      font=("Segoe UI", 8)).grid(row=5, column=1, sticky="w", padx=(8, 0))
@@ -963,6 +1051,82 @@ class JiraManagerDialog(tk.Toplevel):
                       "URL: solo la raiz (https://jira.miempresa.com)."))
             self.i_token_link.grid_remove()
 
+    def show_token_help(self):
+        """Tutorial paso a paso para crear el API token (boton '?')."""
+        cloud = is_cloud_url(self.i_fields["base_url"].get())
+        win = tk.Toplevel(self)
+        win.title("Como conseguir la credencial")
+        win.configure(bg=BG2)
+        win.transient(self)
+        win.grab_set()
+        win.geometry("620x470")
+
+        cont = tk.Frame(win, bg=BG2)
+        cont.pack(fill="both", expand=True, padx=18, pady=16)
+
+        if cloud:
+            titulo = "Crear un API token de Jira Cloud"
+            pasos = [
+                ("1.", "Entra en id.atlassian.com con la MISMA cuenta con la que\n"
+                       "usas Jira (el boton de abajo lo abre directamente)."),
+                ("2.", "Menu 'Security' -> 'Create and manage API tokens'."),
+                ("3.", "Pulsa 'Create API token'."),
+                ("4.", "Ponle un nombre que reconozcas, p.ej. 'JiraBoard',\n"
+                       "y elige la caducidad que quieras."),
+                ("5.", "Pulsa 'Create' y despues 'Copy' para copiar el token.\n"
+                       "OJO: solo se muestra UNA vez; si lo pierdes hay que crear otro."),
+                ("6.", "Vuelve aqui y pegalo en el campo 'API token'."),
+                ("7.", "En el campo 'Usuario' va tu EMAIL completo, no el nombre\n"
+                       "de usuario ni el nick."),
+                ("8.", "Guarda y pulsa 'Probar' para comprobar que conecta."),
+            ]
+            nota = ("Por que un token y no la contrasena: desde 2019 Atlassian\n"
+                    "bloquea la autenticacion basica con contrasena en la API de\n"
+                    "Jira Cloud. Si pones la contrasena, la respuesta es 401.")
+            url = "https://id.atlassian.com/manage-profile/security/api-tokens"
+            texto_btn = "Abrir la pagina de API tokens"
+        else:
+            titulo = "Credenciales de Jira Server / Data Center"
+            pasos = [
+                ("1.", "En Server/DC se usan tu usuario y contrasena normales,\n"
+                       "los mismos con los que entras a Jira por el navegador."),
+                ("2.", "En 'Usuario' va el nombre de usuario (no el email),\n"
+                       "salvo que tu Jira este configurado para entrar con email."),
+                ("3.", "Si tu Jira tiene SSO corporativo, puede que la API solo\n"
+                       "admita un Personal Access Token (Jira 8.14 o superior)."),
+                ("4.", "Para crearlo: tu avatar (arriba a la derecha) -> Perfil ->\n"
+                       "'Personal Access Tokens' -> 'Create token'."),
+                ("5.", "Si esa opcion no aparece, tu Jira no la tiene habilitada:\n"
+                       "usa usuario y contrasena normales."),
+                ("6.", "Guarda y pulsa 'Probar' para comprobar que conecta."),
+            ]
+            nota = ("Si al probar sale HTTP 401 o 403, revisa primero que la URL\n"
+                    "sea solo la raiz del Jira y que el usuario no este bloqueado\n"
+                    "por intentos fallidos (a veces pide CAPTCHA en el navegador).")
+            url = (normalize_jira_url(self.i_fields["base_url"].get())
+                   + "/secure/ViewProfile.jspa")
+            texto_btn = "Abrir mi perfil de Jira"
+
+        tk.Label(cont, text=titulo, bg=BG2, fg=FG,
+                 font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 12))
+
+        for num, txt in pasos:
+            fila = tk.Frame(cont, bg=BG2)
+            fila.pack(fill="x", anchor="w", pady=2)
+            tk.Label(fila, text=num, bg=BG2, fg=ACCENT, font=("Segoe UI", 9, "bold"),
+                     width=3, anchor="nw").pack(side="left", anchor="n")
+            tk.Label(fila, text=txt, bg=BG2, fg=FG_DIM, font=("Segoe UI", 9),
+                     justify="left", anchor="w").pack(side="left", anchor="w")
+
+        tk.Label(cont, text=nota, bg=BG2, fg="#f5a623", font=("Segoe UI", 8),
+                 justify="left").pack(anchor="w", pady=(14, 0))
+
+        botones = tk.Frame(cont, bg=BG2)
+        botones.pack(anchor="w", pady=(16, 0))
+        _btn(botones, texto_btn, lambda: webbrowser.open(url),
+             bg=ACCENT, fg=BG).pack(side="left")
+        _btn(botones, "Cerrar", win.destroy).pack(side="left", padx=(8, 0))
+
     def show_filter(self, filt_id, blank=False, instance_id=None):
         self.clear_right()
         self.sel_kind, self.sel_id = "filter", (None if blank else filt_id)
@@ -996,14 +1160,91 @@ class JiraManagerDialog(tk.Toplevel):
                  bg=BG, fg="#666", font=("Segoe UI", 8), justify="left").grid(
             row=4, column=1, sticky="w", padx=(8, 0), pady=(2, 0))
 
+        # Campos del que se leen estado y categoria. Arrancan deshabilitados
+        # porque la lista hay que pedirsela al Jira; se rellenan al pulsar
+        # "Cargar campos", que sirve para los dos.
+        tk.Label(self.right, text="Campo estado:", bg=BG, fg=FG_DIM,
+                 font=("Segoe UI", 9)).grid(row=5, column=0, sticky="w", pady=(10, 3))
+        campo_box = tk.Frame(self.right, bg=BG)
+        campo_box.grid(row=5, column=1, sticky="w", padx=(8, 0), pady=(10, 3))
+        self.f_status_field = ttk.Combobox(campo_box, state="disabled", width=44)
+        self.f_status_field.pack(side="left")
+        _btn(campo_box, "Cargar campos", self.load_status_fields).pack(side="left", padx=(6, 0))
+
+        tk.Label(self.right, text="Campo categoría:", bg=BG, fg=FG_DIM,
+                 font=("Segoe UI", 9)).grid(row=6, column=0, sticky="w", pady=3)
+        self.f_category_field = ttk.Combobox(self.right, state="disabled", width=44)
+        self.f_category_field.grid(row=6, column=1, sticky="w", padx=(8, 0), pady=3)
+
+        # Lo guardado puede ser un id que aun no esta en la lista (no se ha
+        # cargado todavia), asi que se muestra tal cual hasta que se recargue.
+        self.f_status_map = {}
+        self.f_category_map = {}
+        self.f_status_saved = (f.get("status_field") or "").strip()
+        self.f_category_saved = (f.get("category_field") or "").strip()
+        self.f_status_field.set(self.f_status_saved or FIELD_DEFAULT_LABEL)
+        self.f_category_field.set(self.f_category_saved or CATEGORY_DEFAULT_LABEL)
+
+        self.f_status_hint = tk.Label(
+            self.right,
+            text=("Estado: vacio = campo 'status' estandar.\n"
+                  "Categoria: vacio = etiquetas de Jira. Es lo que agrupa la\n"
+                  "barra de filtros del tablero.\n"
+                  "Pulsa 'Cargar campos' para listar los de este Jira."),
+            bg=BG, fg="#666", font=("Segoe UI", 8), justify="left")
+        self.f_status_hint.grid(row=7, column=1, sticky="w", padx=(8, 0), pady=(2, 0))
+
         self.f_enabled = tk.BooleanVar(value=bool(f.get("enabled", 1)))
         tk.Checkbutton(self.right, text="Activo (se sincroniza)", variable=self.f_enabled,
                        bg=BG, fg=FG_DIM, selectcolor=BG, activebackground=BG,
                        activeforeground=FG, font=("Segoe UI", 9),
-                       highlightthickness=0, borderwidth=0).grid(row=5, column=0, columnspan=2,
+                       highlightthickness=0, borderwidth=0).grid(row=8, column=0, columnspan=2,
                                                                  sticky="w", pady=(8, 0))
         _btn(self.right, "Guardar", self.save_filter_ui, bg=ACCENT, fg=BG).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            row=9, column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+    def load_status_fields(self):
+        """Pide los campos al Jira de este filtro y llena los dos desplegables."""
+        inst_id = self.filter_instance_id or self.current_instance_id()
+        inst, _f = self.find_instance(inst_id) if inst_id else (None, None)
+        if not inst:
+            messagebox.showwarning("Campos", "No se sabe a que Jira pertenece este filtro.",
+                                   parent=self)
+            return
+        self.f_status_hint.config(text="Consultando campos...", fg=FG_DIM)
+        self.update_idletasks()
+
+        def run():
+            campos, err = fetch_issue_fields(inst["base_url"], inst["username"], inst["password"])
+            self.after(0, lambda: self._fill_status_fields(campos, err, inst["name"]))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _fill_status_fields(self, campos, err, inst_name):
+        if err:
+            self.f_status_hint.config(text=f"No se pudieron cargar: {err}", fg="#D96B6B")
+            return
+        # Etiqueta -> id, para poder recuperar el id al guardar.
+        self.f_status_map = {FIELD_DEFAULT_LABEL: ""}
+        self.f_category_map = {CATEGORY_DEFAULT_LABEL: ""}
+        for fid, etiqueta in campos:
+            self.f_status_map[etiqueta] = fid
+            self.f_category_map[etiqueta] = fid
+
+        for combo, mapa, guardado, defecto in (
+            (self.f_status_field, self.f_status_map, self.f_status_saved, FIELD_DEFAULT_LABEL),
+            (self.f_category_field, self.f_category_map, self.f_category_saved, CATEGORY_DEFAULT_LABEL),
+        ):
+            combo.config(values=list(mapa.keys()), state="readonly")
+            actual = defecto
+            if guardado:
+                actual = next((et for et, fid in mapa.items() if fid == guardado), guardado)
+            combo.set(actual)
+
+        self.f_status_hint.config(
+            text=(f"{len(campos)} campos de {inst_name}.\n"
+                  "Estado vacio = 'status'. Categoria vacia = etiquetas de Jira."),
+            fg="#666")
 
     # ── Acciones ──
     def new_instance(self):
@@ -1061,7 +1302,20 @@ class JiraManagerDialog(tk.Toplevel):
         if fid:
             jql = ""
         name = self.f_name.get().strip() or (f"Filtro {fid}" if fid else "JQL")
-        save_filter(self.sel_id, self.filter_instance_id, name, fid, jql, self.f_enabled.get())
+        # De los desplegables se guarda el id del campo, no la etiqueta que se
+        # ve. Si aun no se han cargado los campos, se conserva lo que ya hubiera.
+        def _elegido(combo, mapa, guardado, defecto):
+            valor = combo.get().strip()
+            if mapa:
+                return mapa.get(valor, "")
+            return "" if valor == defecto else guardado
+
+        status_field = _elegido(self.f_status_field, self.f_status_map,
+                                self.f_status_saved, FIELD_DEFAULT_LABEL)
+        category_field = _elegido(self.f_category_field, self.f_category_map,
+                                  self.f_category_saved, CATEGORY_DEFAULT_LABEL)
+        save_filter(self.sel_id, self.filter_instance_id, name, fid, jql,
+                    self.f_enabled.get(), status_field, category_field)
         self.set_status(f"Guardado: {name}", ACCENT)
         self.reload(keep=f"i{self.filter_instance_id}")
 
