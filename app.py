@@ -1194,20 +1194,32 @@ def test_jira_instance(inst_id):
     session = req_lib.Session()
     session.auth = (inst["username"], inst["password"])
     session.verify = False
+    session.headers.update({"Accept": "application/json"})
+    is_cloud = _is_cloud(inst["base_url"])
     try:
         resp = session.get(f"{inst['base_url']}/rest/api/2/myself", timeout=15)
         if resp.status_code != 200:
-            return jsonify({"ok": False, "error": f"Autenticación fallida ({resp.status_code})"})
+            hint = (" Con Jira Cloud el usuario es tu email y la contraseña un "
+                    "API token de id.atlassian.com.") if is_cloud else ""
+            return jsonify({"ok": False,
+                            "error": f"Autenticación fallida ({resp.status_code})." + hint})
         who = resp.json().get("displayName") or resp.json().get("name", "")
-        result = {"ok": True, "user": who}
+        result = {"ok": True, "user": who, "is_cloud": is_cloud}
         jql = _filter_jql({"filter_id": data.get("filter_id", ""), "jql": data.get("jql", "")})
         if jql:
-            r2 = session.get(f"{inst['base_url']}/rest/api/2/search",
-                             params={"jql": jql, "maxResults": 0}, timeout=20)
-            if r2.status_code != 200:
-                result["filter_error"] = f"El filtro no responde ({r2.status_code})"
+            if is_cloud:
+                # El contador clásico (search?maxResults=0) ya no existe en Cloud.
+                r2 = session.post(f"{inst['base_url']}/rest/api/3/search/approximate-count",
+                                  json={"jql": jql}, timeout=20)
+                total_key = "count"
             else:
-                result["issues"] = r2.json().get("total", 0)
+                r2 = session.get(f"{inst['base_url']}/rest/api/2/search",
+                                 params={"jql": jql, "maxResults": 0}, timeout=20)
+                total_key = "total"
+            if r2.status_code != 200:
+                result["filter_error"] = _jira_error(r2, inst["base_url"])
+            else:
+                result["issues"] = r2.json().get(total_key, 0)
         return jsonify(result)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
@@ -1281,8 +1293,92 @@ def _filter_jql(filt):
     return (filt["jql"] or "").strip()
 
 
-def _fetch_issues(session, base_url, jql):
+# Campos que se piden a Jira. En Cloud es obligatorio enumerarlos: el endpoint
+# nuevo devuelve solo el id si no se especifica nada.
+SEARCH_FIELDS = ["status", "description", "priority", "summary",
+                 "labels", "comment", "updated"]
+
+
+def _jira_error(resp, base_url):
+    """Mensaje legible: Jira explica el motivo real en errorMessages/errors."""
+    detail = ""
+    try:
+        body = resp.json()
+        msgs = list(body.get("errorMessages") or [])
+        if isinstance(body.get("errors"), dict):
+            msgs += [str(v) for v in body["errors"].values()]
+        if msgs:
+            detail = " - " + "; ".join(str(m) for m in msgs)
+    except Exception:
+        if resp.text:
+            detail = " - " + resp.text[:200]
+    return f"Error Jira {resp.status_code} en {base_url}{detail}"
+
+
+def _adf_to_text(value):
+    """Aplana un documento ADF a texto plano.
+
+    La API v3 de Jira Cloud devuelve description y comment.body como un arbol
+    JSON (Atlassian Document Format) en lugar de una cadena. El resto de la app
+    (board, buscador, capturas) trabaja con texto, asi que se recorre el arbol
+    quedandose con el texto y marcando los saltos de bloque.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_adf_to_text(v) for v in value)
+    if not isinstance(value, dict):
+        return str(value)
+    node = value.get("type")
+    if node == "text":
+        return value.get("text", "")
+    if node == "hardBreak":
+        return "\n"
+    attrs = value.get("attrs") or {}
+    if node == "mention":
+        return attrs.get("text", "")
+    if node == "emoji":
+        return attrs.get("shortName", "")
+    if node == "inlineCard":
+        return attrs.get("url", "")
+    inner = _adf_to_text(value.get("content", []))
+    if node in ("paragraph", "heading", "listItem", "blockquote",
+                "codeBlock", "rule", "panel", "tableRow"):
+        return inner + "\n"
+    return inner
+
+
+def _fetch_issues_cloud(session, base_url, jql):
+    """Descarga incidencias de Jira Cloud con el endpoint de busqueda nuevo.
+
+    Atlassian retiro GET/POST /rest/api/2|3/search el 1 de mayo de 2025. El
+    sustituto /rest/api/3/search/jql pagina con un cursor (nextPageToken) en vez
+    de startAt y no devuelve 'total', asi que se itera hasta que deja de mandar
+    token. El limite de paginas evita un bucle infinito si el token se repitiera.
+    """
+    issues = []
+    payload = {"jql": jql, "maxResults": 100, "fields": SEARCH_FIELDS}
+    for _ in range(200):
+        resp = session.post(f"{base_url}/rest/api/3/search/jql",
+                            json=payload, timeout=30)
+        if resp.status_code != 200:
+            raise RuntimeError(_jira_error(resp, base_url))
+        data = resp.json()
+        page = data.get("issues", [])
+        issues.extend(page)
+        token = data.get("nextPageToken")
+        if not token or not page:
+            break
+        payload["nextPageToken"] = token
+    return issues
+
+
+def _fetch_issues(session, base_url, jql, is_cloud=False):
     """Descarga todas las incidencias de una JQL paginando de 50 en 50."""
+    if is_cloud:
+        return _fetch_issues_cloud(session, base_url, jql)
     issues = []
     start_at = 0
     while True:
@@ -1292,12 +1388,12 @@ def _fetch_issues(session, base_url, jql):
                 "jql": jql,
                 "startAt": start_at,
                 "maxResults": 50,
-                "fields": "status,description,priority,summary,labels,comment,updated",
+                "fields": ",".join(SEARCH_FIELDS),
             },
             timeout=30,
         )
         if resp.status_code != 200:
-            raise RuntimeError(f"Error Jira {resp.status_code} en {base_url}")
+            raise RuntimeError(_jira_error(resp, base_url))
         data = resp.json()
         issues.extend(data.get("issues", []))
         if start_at + 50 >= data.get("total", 0):
@@ -1332,7 +1428,9 @@ def sync_jira():
         session = req_lib.Session()
         session.auth = (inst["username"], inst["password"])
         session.verify = False
-        session.headers.update({"Content-Type": "application/json"})
+        session.headers.update({"Content-Type": "application/json",
+                                "Accept": "application/json"})
+        is_cloud = _is_cloud(inst["base_url"])
         seen_by_instance.setdefault(inst["id"], set())
         for filt in filters:
             jql = _filter_jql(filt)
@@ -1340,7 +1438,7 @@ def sync_jira():
                 continue
             _sync_progress["phase_text"] = f"Obteniendo {inst['name']} / {filt['name']}..."
             try:
-                issues = _fetch_issues(session, inst["base_url"], jql)
+                issues = _fetch_issues(session, inst["base_url"], jql, is_cloud)
             except Exception as e:
                 errors.append(f"{inst['name']} / {filt['name']}: {e}")
                 continue
@@ -1393,7 +1491,7 @@ def sync_jira():
         status = fields.get("status", {}).get("name", "")
         priority = fields.get("priority", {}).get("name", "Normal") if fields.get("priority") else "Normal"
         labels = ", ".join(fields.get("labels", []))
-        desc = fields.get("description", "") or ""
+        desc = _adf_to_text(fields.get("description"))
         # Parse Jira updated date
         jira_updated_raw = fields.get("updated", "") or ""
         jira_updated = ""
@@ -1443,7 +1541,7 @@ def sync_jira():
         if comments:
             lc = comments[-1]
             autor = lc.get("author", {}).get("displayName", "")
-            body = lc.get("body", "")[:200]
+            body = _adf_to_text(lc.get("body"))[:200]
             last_comment = f"[{autor}] {body}"
 
         # Ver si ya existe. La clave sola no basta: dos instancias distintas
@@ -1691,7 +1789,11 @@ def _screenshot_worker(instance, keys):
                 screenshot_file = f"{key}.png"
                 screenshot_path = SCREENSHOTS_DIR / screenshot_file
                 driver.save_screenshot(str(screenshot_path))
-                conn.execute("UPDATE tasks SET screenshot=? WHERE jira_key=?", (screenshot_file, key))
+                # Acotado a la instancia: dos Jiras distintos pueden usar el mismo
+                # prefijo de proyecto y sin este filtro la captura de uno se
+                # asignaria tambien a la tarea homonima del otro.
+                conn.execute("UPDATE tasks SET screenshot=? WHERE jira_key=? AND jira_instance_id=?",
+                             (screenshot_file, key, instance["id"]))
                 conn.commit()
                 _sync_progress["done"] += 1
                 _sync_progress["current"] = key

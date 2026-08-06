@@ -904,10 +904,23 @@ class JiraManagerDialog(tk.Toplevel):
             e.insert(0, inst.get(key, "") or "")
             self.i_fields[key] = e
 
-        tk.Label(self.right, text="Contraseña:", bg=BG, fg=FG_DIM,
-                 font=("Segoe UI", 9)).grid(row=4, column=0, sticky="w", pady=3)
-        self.i_pass = _entry(self.right, show="*")
-        self.i_pass.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=3)
+        # Credencial: en Cloud es un API token y en Server/DC la contrasena del
+        # usuario. La etiqueta y la ayuda se recalculan mientras se teclea la URL
+        # para no tener que adivinar que hay que meter en cada caso.
+        self.i_secret_label = tk.Label(self.right, text="Contraseña:", bg=BG, fg=FG_DIM,
+                                       font=("Segoe UI", 9))
+        self.i_secret_label.grid(row=4, column=0, sticky="w", pady=3)
+        secret_box = tk.Frame(self.right, bg=BG)
+        secret_box.grid(row=4, column=1, sticky="w", padx=(8, 0), pady=3)
+        self.i_pass = _entry(secret_box, width=34, show="*")
+        self.i_pass.pack(side="left")
+        self.i_show_secret = tk.BooleanVar(value=False)
+        tk.Checkbutton(secret_box, text="Ver", variable=self.i_show_secret,
+                       command=lambda: self.i_pass.config(
+                           show="" if self.i_show_secret.get() else "*"),
+                       bg=BG, fg=FG_DIM, selectcolor=BG, activebackground=BG,
+                       activeforeground=FG, font=("Segoe UI", 8),
+                       highlightthickness=0, borderwidth=0).pack(side="left", padx=(6, 0))
         if not blank:
             tk.Label(self.right, text="(vacío = no cambiar la guardada)", bg=BG, fg="#666",
                      font=("Segoe UI", 8)).grid(row=5, column=1, sticky="w", padx=(8, 0))
@@ -918,14 +931,37 @@ class JiraManagerDialog(tk.Toplevel):
                        activeforeground=FG, font=("Segoe UI", 9),
                        highlightthickness=0, borderwidth=0).grid(row=6, column=0, columnspan=2,
                                                                  sticky="w", pady=(8, 0))
-        tk.Label(self.right,
-                 text=("URL: solo la raiz (https://miempresa.atlassian.net).\n"
-                       "Jira Cloud (*.atlassian.net): usuario = tu EMAIL y\n"
-                       "contrasena = un API TOKEN, no la del usuario."),
-                 bg=BG, fg="#666", font=("Segoe UI", 8), justify="left").grid(
-            row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.i_kind_hint = tk.Label(self.right, text="", bg=BG, fg="#666",
+                                    font=("Segoe UI", 8), justify="left")
+        self.i_kind_hint.grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.i_token_link = tk.Label(self.right, text="Generar API token en id.atlassian.com",
+                                     bg=BG, fg="#7Fb3e8", font=("Segoe UI", 8, "underline"),
+                                     cursor="hand2")
+        self.i_token_link.bind("<Button-1>", lambda _e: webbrowser.open(
+            "https://id.atlassian.com/manage-profile/security/api-tokens"))
+        self.i_token_link.grid(row=8, column=0, columnspan=2, sticky="w")
+
+        self.i_fields["base_url"].bind("<KeyRelease>", lambda _e: self.refresh_instance_kind())
+        self.refresh_instance_kind()
+
         _btn(self.right, "Guardar", self.save_instance_ui, bg=ACCENT, fg=BG).grid(
-            row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            row=9, column=0, columnspan=2, sticky="w", pady=(12, 0))
+
+    def refresh_instance_kind(self):
+        """Ajusta etiqueta y ayuda de la credencial segun sea Cloud o Server."""
+        if is_cloud_url(self.i_fields["base_url"].get()):
+            self.i_secret_label.config(text="API token:")
+            self.i_kind_hint.config(
+                text=("Jira Cloud detectado. Usuario = tu EMAIL y la credencial\n"
+                      "es un API TOKEN, no la contrasena de la cuenta.\n"
+                      "URL: solo la raiz (https://miempresa.atlassian.net)."))
+            self.i_token_link.grid()
+        else:
+            self.i_secret_label.config(text="Contraseña:")
+            self.i_kind_hint.config(
+                text=("Jira Server/DC. Usuario y contrasena normales.\n"
+                      "URL: solo la raiz (https://jira.miempresa.com)."))
+            self.i_token_link.grid_remove()
 
     def show_filter(self, filt_id, blank=False, instance_id=None):
         self.clear_right()
