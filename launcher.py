@@ -479,19 +479,64 @@ def get_remote_version():
         return None
 
 
-def get_remote_changelog(local_ver, remote_ver, include_current=False):
-    """Fetch CHANGELOG.txt from GitHub and return relevant entries.
-    - If there are entries newer than local_ver → return all of them.
-    - If local_ver is the newest or not found → return the latest entry."""
+def _fetch_remote_changelog_text():
+    """Baja CHANGELOG.txt del repo. Devuelve el texto o None.
+
+    Se pide por la API de contenidos y NO por raw.githubusercontent.com: ese
+    dominio sirve contenido cacheado (CDN y/o proxy corporativo) y devolvia el
+    changelog de hace meses aunque el commit estuviera subido, con lo que las
+    novedades al actualizar siempre salian desfasadas. La API devuelve siempre
+    lo que hay en la rama.
+    """
+    import base64
+    import json
+
+    api = (f"https://api.github.com/repos/{GITHUB_REPO}/contents/CHANGELOG.txt"
+           f"?ref={GITHUB_BRANCH}")
+    try:
+        req = Request(api, headers={
+            "User-Agent": "JiraBoard-Updater",
+            "Accept": "application/vnd.github.v3+json",
+        })
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("content"):
+            return base64.b64decode(data["content"]).decode("utf-8", "replace")
+        # Repos grandes devuelven el contenido vacio y un enlace de descarga.
+        if data.get("download_url"):
+            req2 = Request(data["download_url"], headers={"User-Agent": "JiraBoard-Updater"})
+            with urlopen(req2, timeout=10) as resp2:
+                return resp2.read().decode("utf-8", "replace")
+    except (URLError, HTTPError, OSError, ValueError, KeyError):
+        pass
+
+    # Ultimo recurso por si la API estuviera limitada por rate limit.
     try:
         url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/CHANGELOG.txt"
-        req = Request(url, headers={"User-Agent": "JiraBoard-Updater"})
+        req = Request(url, headers={"User-Agent": "JiraBoard-Updater",
+                                    "Cache-Control": "no-cache"})
         with urlopen(req, timeout=10) as resp:
-            content = resp.read().decode("utf-8")
+            return resp.read().decode("utf-8", "replace")
     except (URLError, HTTPError, OSError):
         return None
 
-    # Parse sections: each starts with [hash], ordered newest first
+
+def get_remote_changelog(local_ver, remote_ver, include_current=False):
+    """Devuelve las entradas del changelog que son novedad para el usuario.
+
+    - Si se encuentra la version local, se devuelven todas las que hay por
+      encima de ella.
+    - Las entradas marcadas [pendiente] son, por definicion, posteriores a
+      cualquier version publicada, asi que siempre cuentan como novedad. Sin
+      esto no se veian nunca, porque solo se casaba por hash de commit y las
+      entradas se escriben como [pendiente] hasta que se publican.
+    - Si no se encuentra la version local, se devuelve la entrada mas reciente.
+    """
+    content = _fetch_remote_changelog_text()
+    if not content:
+        return None
+
+    # Cada seccion empieza por [hash] o [pendiente], de mas nueva a mas vieja.
     import re
     sections = re.split(r'(?=^\[)', content, flags=re.MULTILINE)
     parsed = []
@@ -503,7 +548,6 @@ def get_remote_changelog(local_ver, remote_ver, include_current=False):
     if not parsed:
         return None
 
-    # Find local version position in changelog
     local_idx = None
     for i, (ver, _) in enumerate(parsed):
         if ver == local_ver:
@@ -511,12 +555,16 @@ def get_remote_changelog(local_ver, remote_ver, include_current=False):
             break
 
     if local_idx is not None and local_idx > 0:
-        # There are newer entries than mine → show them all
-        newer = [text for _, text in parsed[:local_idx]]
-        return "\n\n".join(newer)
-    else:
-        # My version is the newest or not found → show latest entry
-        return parsed[0][1]
+        return "\n\n".join(text for _, text in parsed[:local_idx])
+
+    if local_idx is None:
+        # Version local desconocida en el changelog: al menos se muestran las
+        # entradas pendientes de publicar, que son las novedades reales.
+        pendientes = [text for ver, text in parsed if ver.lower() == "pendiente"]
+        if pendientes:
+            return "\n\n".join(pendientes)
+
+    return parsed[0][1]
 
 
 def _get_exe_download_url():
