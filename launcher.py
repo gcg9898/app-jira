@@ -15,12 +15,13 @@ import tempfile
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
+from chat_handoff import SUMMARY_TARGETS, get_summary_target, save_summary_target, vscode_status
 
 if getattr(sys, 'frozen', False):
     _env_data = os.environ.get("JIRABOARD_DATA_DIR")
     BASE_DIR = Path(_env_data) if _env_data else Path(sys.executable).parent
 else:
-    BASE_DIR = Path(__file__).parent
+    BASE_DIR = Path(os.environ.get("JIRABOARD_DATA_DIR") or Path(__file__).parent)
 DB_PATH = BASE_DIR / "board.db"
 ENV_PATH = BASE_DIR / ".env"
 UV_CMD = "uv"
@@ -1414,6 +1415,89 @@ class JiraManagerDialog(tk.Toplevel):
         threading.Thread(target=run, daemon=True).start()
 
 
+class SummarySettingsDialog(tk.Toplevel):
+    """Configuración del destino, sin fingir acceso a la lista de chats de VS Code."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Resumen de incidencias con Copilot")
+        self.configure(bg=BG2)
+        self.transient(parent)
+        self.grab_set()
+        self.geometry("630x340")
+        self.minsize(590, 320)
+        self._probe_queue = None
+
+        content = tk.Frame(self, bg=BG2, padx=18, pady=16)
+        content.pack(fill="both", expand=True)
+        tk.Label(content, text="Destino del resumen", bg=BG2, fg=FG,
+                 font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 10))
+        self.target_combo = ttk.Combobox(content, state="readonly", values=list(SUMMARY_TARGETS.values()))
+        self.target_combo.pack(fill="x")
+        self.target_combo.set(SUMMARY_TARGETS[get_summary_target(DB_PATH)])
+        self.target_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_hint())
+        self.hint = tk.Label(content, bg=BG2, fg=FG_DIM, wraplength=550, justify="left", anchor="w")
+        self.hint.pack(fill="x", pady=12)
+        tk.Label(content, bg=BG2, fg="#888", wraplength=550, justify="left",
+                 text=("No hay un selector público de conversaciones por ID en la CLI. "
+                       "Para continuar en este mismo chat, elige copiar y pega el contexto en él. "
+                       "Nada se envía automáticamente por tener VS Code abierto.")).pack(fill="x")
+        self.probe_label = tk.Label(content, text="", bg=BG2, fg=FG_DIM, wraplength=550, justify="left")
+        self.probe_label.pack(anchor="w", pady=10)
+        buttons = tk.Frame(content, bg=BG2)
+        buttons.pack(fill="x", side="bottom")
+        self.probe_button = _btn(buttons, "Detectar VS Code", self.check_vscode)
+        self.probe_button.pack(side="left")
+        _btn(buttons, "Guardar", self.save, bg=ACCENT, fg=BG).pack(side="right")
+        _btn(buttons, "Cancelar", self.destroy).pack(side="right", padx=8)
+        self.refresh_hint()
+
+    def selected_target(self):
+        return next((key for key, label in SUMMARY_TARGETS.items() if label == self.target_combo.get()), "clipboard")
+
+    def refresh_hint(self):
+        text = ("Conserva este u otro chat: desde Últimas actualizaciones prepara el resumen, "
+                "copia el contexto y pégalo en la conversación elegida. Tú decides el chat exacto.")
+        if self.selected_target() == "vscode_new":
+            text = ("Envía el contexto a un chat nuevo en la última ventana activa de VS Code, "
+                    "en modo consulta (Ask). Requiere VS Code abierto y Copilot autenticado. "
+                    "No garantiza reutilizar la conversación que estés leyendo.")
+        self.hint.config(text=text)
+
+    def check_vscode(self):
+        import queue
+        self._probe_queue = queue.Queue()
+        self.probe_button.config(state="disabled")
+        self.probe_label.config(text="Comprobando VS Code…")
+        result_queue = self._probe_queue
+
+        def check():
+            result_queue.put(vscode_status(DB_PATH))
+
+        threading.Thread(target=check, daemon=True).start()
+        self.after(100, self._finish_probe)
+
+    def _finish_probe(self):
+        import queue
+        try:
+            result = self._probe_queue.get_nowait()
+        except queue.Empty:
+            self.after(100, self._finish_probe)
+            return
+        message = ("VS Code abierto y CLI localizada. La sesión de Copilot se comprueba en VS Code."
+                   if result["can_send"] else "VS Code o su CLI no están disponibles. Puedes usar Copiar contexto.")
+        self.probe_label.config(text=message)
+        self.probe_button.config(state="normal")
+
+    def save(self):
+        try:
+            save_summary_target(DB_PATH, self.selected_target())
+        except (OSError, sqlite3.Error, ValueError):
+            messagebox.showerror("Resumen", "No se pudo guardar el destino del resumen.", parent=self)
+            return
+        self.destroy()
+
+
 class LauncherApp:
     def __init__(self):
         self.root = tk.Tk()
@@ -1569,6 +1653,15 @@ class LauncherApp:
 
         self.refresh_jira_summary()
 
+        summary_frame = tk.Frame(root, bg=BG, padx=16, pady=12,
+                     highlightbackground=BORDER, highlightthickness=1)
+        summary_frame.pack(fill="x", padx=20, pady=(0, 12))
+        tk.Label(summary_frame, text="Resumen de incidencias con Copilot", bg=BG, fg=FG,
+             font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        tk.Label(summary_frame, text="Elige cómo llevar los cambios de hoy al chat.",
+             bg=BG, fg="#888", font=("Segoe UI", 8)).pack(anchor="w", pady=6)
+        _btn(summary_frame, "Configurar destino del resumen", self.open_summary_settings).pack(anchor="w")
+
         # Update frame
         upd_frame = tk.Frame(root, bg="#0f0f23", padx=16, pady=12,
                              highlightbackground="#2a2a4a", highlightthickness=1)
@@ -1723,6 +1816,9 @@ class LauncherApp:
         # sincronización use la configuración recién guardada.
         if flask_proc and flask_proc.poll() is None:
             self.restart_flask()
+
+    def open_summary_settings(self):
+        self.root.wait_window(SummarySettingsDialog(self.root))
 
     def check_for_updates(self, auto_check=False):
         """Check GitHub for a newer version and offer to update."""

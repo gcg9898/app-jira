@@ -13,6 +13,9 @@ flask.log
 # Capturas de pantalla generadas
 screenshots/
 
+# Contexto privado generado para resumir incidencias en Copilot
+copilot-context/
+
 # Python
 __pycache__/
 *.pyc

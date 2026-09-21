@@ -34,6 +34,24 @@
         }
         .btn-secondary { background: #2a2a4a; color: #e0e0e0; text-decoration: none; }
         .btn-secondary:hover { background: #3a3a5a; }
+        .btn-primary { background: #16c79a; color: #0f0f23; }
+        .btn-primary:hover { background: #20dbac; }
+        .btn:disabled { opacity: .55; cursor: not-allowed; }
+        .btn:focus-visible { outline: 2px solid #16c79a; outline-offset: 3px; }
+        .sync-progress { margin-bottom: 16px; padding: 12px; background: #1a1a2e; border-radius: 8px; }
+        .sync-progress progress { width: 100%; height: 8px; margin-top: 8px; accent-color: #16c79a; }
+        .sync-progress p { margin-top: 6px; font-size: .8rem; color: #aaa; }
+        .title-row { display: flex; align-items: flex-start; gap: 8px; }
+        .title-row .task-title { flex: 1; min-width: 0; user-select: text; overflow-wrap: anywhere; }
+        .copy-title { flex-shrink: 0; padding: 4px 7px; font-size: .7rem; }
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+                 padding: 12px 18px; background: #16c79a; color: #0f0f23; border-radius: 8px;
+                 max-width: 90vw; z-index: 10010; }
+        .toast.error { background: #e7a454; }
+        @media (max-width: 700px) {
+            .header { flex-wrap: wrap; gap: 12px; }
+            .header-actions { flex-wrap: wrap; }
+        }
 
         .recent-container {
             max-width: 1400px;
@@ -77,6 +95,17 @@
             color: #888;
             margin-bottom: 16px;
         }
+        .summary-panel { margin-bottom: 20px; padding: 16px; border: 1px solid #34485b;
+                         border-radius: 10px; background: #141e30; }
+        .summary-panel h2 { font-size: 1rem; color: #b5d5ee; margin-bottom: 8px; }
+        .summary-panel p { font-size: .8rem; line-height: 1.5; color: #b8c4cf; margin-bottom: 10px; }
+        .summary-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .summary-list { list-style: none; max-height: 300px; overflow-y: auto; margin: 12px 0; }
+        .summary-list li { border-top: 1px solid #2a3b50; padding: 8px 0; font-size: .85rem; }
+        .summary-list small { display: block; color: #b8c4cf; margin-top: 5px; }
+        .summary-warnings { white-space: pre-wrap; color: #f1bd72 !important; }
+        .context-copy { width: 100%; min-height: 180px; background: #0f0f23; color: #ddd;
+                        border: 1px solid #34485b; border-radius: 6px; padding: 8px; margin-top: 12px; }
 
         .results-grid {
             display: grid;
@@ -237,11 +266,38 @@
     <div class="header">
         <h1>🕐 Últimas actualizaciones</h1>
         <div class="header-actions">
+            <button id="syncBtn" class="btn btn-primary" type="button">🔄 Sincronizar Jira</button>
             <a href="/" class="btn btn-secondary">← Volver al Board</a>
         </div>
     </div>
 
     <div class="recent-container">
+        <div class="sync-progress" id="syncProgress" role="status" aria-live="polite" hidden>
+            <strong id="syncPhase">Conectando con Jira…</strong>
+            <progress id="syncMeter" max="100" value="0" aria-label="Progreso de sincronización"></progress>
+            <p id="syncDetail"></p>
+        </div>
+        <section class="summary-panel" aria-labelledby="summaryHeading">
+            <h2 id="summaryHeading">Resumen de los cambios de estado de hoy</h2>
+            <p>Consulta el historial real de las incidencias sincronizadas de tus filtros activos.
+               Incluye las que han salido del filtro. «Hoy» se calcula con la hora del equipo donde corre JiraBoard.</p>
+            <div class="summary-actions">
+                <button id="prepareSummaryBtn" class="btn btn-secondary" type="button">Preparar contexto de hoy</button>
+                <button id="copySummaryBtn" class="btn btn-secondary" type="button" hidden>Copiar para este chat</button>
+                <button id="sendSummaryBtn" class="btn btn-primary" type="button" hidden>Enviar a un chat nuevo en VS Code</button>
+            </div>
+            <p id="summaryStatus" role="status" aria-live="polite" style="margin-top:10px;">
+                Sincroniza primero para incluir nuevas incidencias. El destino se configura en el panel de escritorio.
+            </p>
+            <p id="summaryWarnings" class="summary-warnings" hidden></p>
+            <ul id="summaryIssues" class="summary-list" hidden></ul>
+            <p id="summaryPrivacy" hidden>
+                El contexto contiene enlaces, títulos, descripciones, transiciones y una muestra de comentarios; no las credenciales.
+                Para continuar en este mismo chat, cópialo y pégalo aquí. El envío automático abre un chat en VS Code,
+                no selecciona una conversación existente por ID.
+            </p>
+            <textarea id="summaryCopyFallback" class="context-copy" aria-label="Contexto para copiar manualmente" readonly hidden></textarea>
+        </section>
         <div class="toolbar">
             <input type="text" id="filterInput" placeholder="Filtrar por texto (título, clave, descripción, columna, estado)...">
             <select id="sortSelect">
@@ -256,6 +312,7 @@
     <div class="lightbox-overlay" id="lightbox" onclick="closeLightbox()">
         <img id="lightboxImg" src="" onclick="toggleZoom(event)">
     </div>
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
     <script>
         function escapeHtml(text) {
@@ -282,13 +339,254 @@
         }
 
         let allTasks = [];
+        let syncRequestPending = false;
+        let syncWatching = false;
+        let syncPollTimer = null;
+        let syncPollErrors = 0;
+        let toastTimer = null;
+        let preparedSummary = null;
+        let summaryPreparing = false;
         const filterInput = document.getElementById("filterInput");
         const sortSelect = document.getElementById("sortSelect");
         filterInput.addEventListener("input", render);
         sortSelect.addEventListener("change", render);
+        document.getElementById("syncBtn").addEventListener("click", syncJira);
+        document.getElementById("prepareSummaryBtn").addEventListener("click", prepareSummary);
+        document.getElementById("copySummaryBtn").addEventListener("click", copySummary);
+        document.getElementById("sendSummaryBtn").addEventListener("click", sendSummary);
+        document.getElementById("resultsGrid").addEventListener("click", event => {
+            const button = event.target.closest("[data-copy-title]");
+            if (button) copyTitle(Number(button.dataset.copyTitle));
+        });
+
+        function showToast(message, error = false) {
+            const toast = document.getElementById("toast");
+            clearTimeout(toastTimer);
+            toast.textContent = message;
+            toast.classList.toggle("error", error);
+            toast.hidden = false;
+            toastTimer = setTimeout(() => { toast.hidden = true; }, error ? 8000 : 3500);
+        }
+
+        async function copyText(text) {
+            if (navigator.clipboard && window.isSecureContext) {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    return;
+                } catch (_) { /* Intentar la alternativa si el navegador deniega permisos. */ }
+            }
+            const textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.style.cssText = "position:fixed;left:-9999px;top:0";
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                if (!document.execCommand("copy")) throw new Error("Copia no disponible");
+            } finally {
+                textarea.remove();
+            }
+        }
+
+        async function copyTitle(id) {
+            const task = allTasks.find(t => t.id === id);
+            if (!task) return;
+            const title = task.jira_key ? task.title : (task.custom_title || task.title);
+            try {
+                await copyText(title || "");
+                showToast("Título copiado");
+            } catch (_) {
+                const titleEl = document.querySelector(`[data-task-id="${id}"] .task-title`);
+                if (titleEl) {
+                    const range = document.createRange();
+                    range.selectNodeContents(titleEl);
+                    const selection = window.getSelection();
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+                }
+                showToast("Título seleccionado. Pulsa Ctrl+C para copiarlo.", true);
+            }
+        }
+
+        async function prepareSummary() {
+            if (summaryPreparing) return;
+            summaryPreparing = true;
+            preparedSummary = null;
+            const button = document.getElementById("prepareSummaryBtn");
+            button.disabled = true;
+            button.textContent = "Consultando historiales…";
+            ["copySummaryBtn", "sendSummaryBtn", "summaryIssues", "summaryWarnings", "summaryPrivacy", "summaryCopyFallback"]
+                .forEach(id => { document.getElementById(id).hidden = true; });
+            document.getElementById("summaryStatus").textContent = "Consultando Jira; todavía no se está enviando nada a Copilot.";
+            try {
+                const response = await fetch("/api/daily-summary", {
+                    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+                });
+                const data = await response.json();
+                if (!response.ok || !data.ok) throw new Error(data.error || "No se pudo preparar el contexto");
+                preparedSummary = data;
+                const report = data.report;
+                const status = document.getElementById("summaryStatus");
+                status.textContent = `${report.date} (${report.timezone}): ${report.issue_count} incidencias con ${report.change_count} cambios de estado confirmados. `
+                    + (report.warnings.length ? "Resultado parcial; revisa los avisos." : "");
+                const warnings = document.getElementById("summaryWarnings");
+                warnings.textContent = report.warnings.join("\n");
+                warnings.hidden = !report.warnings.length;
+                const list = document.getElementById("summaryIssues");
+                list.replaceChildren();
+                report.issues.forEach(issue => {
+                    const li = document.createElement("li");
+                    const title = document.createElement("strong");
+                    title.textContent = `${issue.instance} · ${issue.key} — ${issue.title}`;
+                    li.appendChild(title);
+                    issue.changes.forEach(change => {
+                        const line = document.createElement("small");
+                        line.textContent = `${change.at.substring(11, 19)}: ${change.from ?? "(vacío)"} → ${change.to ?? "(vacío)"}${change.author ? ` · ${change.author}` : ""}`;
+                        li.appendChild(line);
+                    });
+                    list.appendChild(li);
+                });
+                list.hidden = !report.issue_count;
+                document.getElementById("copySummaryBtn").hidden = !report.issue_count;
+                document.getElementById("summaryPrivacy").hidden = !report.issue_count;
+                if (report.issue_count) {
+                    try {
+                        const capabilityResponse = await fetch("/api/copilot/status", { cache: "no-store" });
+                        if (!capabilityResponse.ok) throw new Error("Detección no disponible");
+                        const capability = await capabilityResponse.json();
+                        const sendButton = document.getElementById("sendSummaryBtn");
+                        sendButton.hidden = capability.target !== "vscode_new";
+                        sendButton.disabled = !capability.can_send;
+                        status.textContent += capability.target === "clipboard"
+                            ? " Destino: copiar y pegar en este u otro chat existente."
+                            : capability.can_send ? " VS Code detectado: puedes enviar el contexto."
+                                : " VS Code no está disponible; puedes copiar el contexto o abrirlo y preparar de nuevo.";
+                    } catch (_) {
+                        status.textContent += " No se pudo detectar VS Code. Puedes copiar el contexto.";
+                    }
+                }
+            } catch (error) {
+                document.getElementById("summaryStatus").textContent = error.message || "Error al preparar el contexto.";
+                showToast(error.message || "Error al preparar el contexto", true);
+            } finally {
+                summaryPreparing = false;
+                button.disabled = false;
+                button.textContent = "Preparar contexto de hoy";
+            }
+        }
+
+        async function copySummary() {
+            if (!preparedSummary) return;
+            try {
+                await copyText(preparedSummary.prompt);
+                showToast("Contexto copiado. Pégalo en este chat o en la conversación que elijas.");
+            } catch (_) {
+                const field = document.getElementById("summaryCopyFallback");
+                field.value = preparedSummary.prompt;
+                field.hidden = false;
+                field.focus();
+                field.select();
+                showToast("Pulsa Ctrl+C para copiar y pégalo en el chat elegido.", true);
+            }
+        }
+
+        async function sendSummary() {
+            if (!preparedSummary) return;
+            if (!confirm(`Se enviará a Copilot en VS Code el contexto de ${preparedSummary.report.issue_count} incidencias. Se abrirá un chat nuevo, no necesariamente este. ¿Continuar?`)) return;
+            const button = document.getElementById("sendSummaryBtn");
+            button.disabled = true;
+            try {
+                const response = await fetch(`/api/daily-summary/${preparedSummary.report_id}/send`, {
+                    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
+                });
+                const data = await response.json();
+                if (!response.ok || !data.ok) throw new Error(data.error || "No se pudo enviar a VS Code");
+                document.getElementById("summaryStatus").textContent = data.message;
+                showToast(data.message);
+            } catch (error) {
+                showToast(error.message || "No se pudo enviar a VS Code", true);
+                document.getElementById("summaryStatus").textContent = error.message;
+            }
+        }
+
+        function setSyncBusy(busy) {
+            const button = document.getElementById("syncBtn");
+            button.disabled = busy;
+            button.textContent = busy ? "⏳ Sincronizando…" : "🔄 Sincronizar Jira";
+        }
+
+        async function pollSync() {
+            clearTimeout(syncPollTimer);
+            try {
+                const response = await fetch("/api/screenshot-progress", { cache: "no-store" });
+                if (!response.ok) throw new Error("No se pudo consultar el progreso");
+                const progress = await response.json();
+                syncPollErrors = 0;
+                if (progress.running || syncRequestPending) {
+                    syncWatching = true;
+                    setSyncBusy(true);
+                    document.getElementById("syncProgress").hidden = false;
+                    document.getElementById("syncPhase").textContent = progress.phase_text || "Sincronizando…";
+                    const fraction = progress.total ? Math.min(progress.done / progress.total, 1) : 0;
+                    const percent = progress.phase === "screenshots" ? 30 + fraction * 70
+                        : progress.phase === "processing" ? 5 + fraction * 25 : 5;
+                    document.getElementById("syncMeter").value = percent;
+                    document.getElementById("syncDetail").textContent =
+                        `${progress.total ? `${progress.done} / ${progress.total}` : ""} ${progress.current || ""}`.trim();
+                    syncPollTimer = setTimeout(pollSync, 1200);
+                } else {
+                    const wasWatching = syncWatching;
+                    syncWatching = false;
+                    setSyncBusy(false);
+                    document.getElementById("syncProgress").hidden = true;
+                    if (wasWatching) await loadTasks();
+                }
+            } catch (_) {
+                if (syncWatching || syncRequestPending) {
+                    syncPollErrors++;
+                    if (syncPollErrors < 5) {
+                        syncPollTimer = setTimeout(pollSync, 2000);
+                    } else {
+                        syncWatching = false;
+                        setSyncBusy(syncRequestPending);
+                        showToast("No se puede consultar la sincronización. Puede seguir ejecutándose en el servidor.", true);
+                    }
+                }
+            }
+        }
+
+        async function syncJira() {
+            if (syncRequestPending) return;
+            syncRequestPending = true;
+            setSyncBusy(true);
+            document.getElementById("syncProgress").hidden = false;
+            document.getElementById("syncPhase").textContent = "Conectando con Jira…";
+            document.getElementById("syncDetail").textContent = "";
+            pollSync();
+            try {
+                const response = await fetch("/api/sync-jira", { method: "POST" });
+                const data = await response.json();
+                if (response.status === 409 && data.running) {
+                    showToast("Ya hay una sincronización en marcha. Se mostrará su progreso.");
+                } else if (!response.ok || !data.ok) {
+                    throw new Error(data.error || "No se pudo sincronizar");
+                } else {
+                    await loadTasks();
+                    showToast(data.errors && data.errors.length
+                        ? `Sincronización parcial: ${data.errors.join(" | ")}`
+                        : `Sincronizadas ${data.total} incidencias (${data.imported} nuevas).`,
+                        !!(data.errors && data.errors.length));
+                }
+            } catch (error) {
+                showToast(error.message || "Error de conexión al sincronizar", true);
+            } finally {
+                syncRequestPending = false;
+                pollSync();
+            }
+        }
 
         async function loadTasks() {
             const resp = await fetch("/api/columns");
+            if (!resp.ok) throw new Error("No se pudieron cargar las incidencias");
             const cols = await resp.json();
             const colName = {};
             const seen = new Set();
@@ -356,7 +654,7 @@
             else if (p.includes("low") || p.includes("baja")) priorityClass = "priority-low";
 
             const jiraBadge = task.jira_key
-                ? `<a class="jira-badge" href="${escapeHtml(task.jira_url || ('https://jiraitsm.eulen.com/browse/' + task.jira_key))}" target="_blank">${escapeHtml(task.jira_key)}</a>`
+                ? `<span class="jira-badge">${escapeHtml(task.jira_key)}</span>`
                 : `<span class="jira-badge" style="background:#666;">manual</span>`;
 
             const columnBadge = task._col_name
@@ -396,9 +694,12 @@
                 : "";
 
             return `
-                <div class="task-card">
+                <div class="task-card" data-task-id="${task.id}">
                     ${jiraBadge} ${columnBadge} ${updatedBadge}
-                    <div class="task-title">${title}</div>
+                    <div class="title-row">
+                        <div class="task-title">${title}</div>
+                        <button type="button" class="btn btn-secondary copy-title" data-copy-title="${task.id}">📋 Copiar título</button>
+                    </div>
                     ${subtitle}
                     ${descHtml}
                     <div class="task-meta">
@@ -433,7 +734,8 @@
             if (e.key === "Escape") closeLightbox();
         });
 
-        loadTasks();
+        loadTasks().catch(error => showToast(error.message, true));
+        pollSync();
     </script>
 </body>
 </html>
