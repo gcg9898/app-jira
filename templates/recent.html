@@ -104,6 +104,10 @@
         .summary-list { list-style: none; max-height: 300px; overflow-y: auto; margin: 12px 0; }
         .summary-list li { border-top: 1px solid #2a3b50; padding: 8px 0; font-size: .85rem; }
         .summary-list small { display: block; color: #b8c4cf; margin-top: 5px; }
+        .summary-panel summary { cursor: pointer; color: #b5d5ee; padding: 8px 0; }
+        .summary-panel .context-description, .summary-panel .context-comment { white-space: pre-wrap; overflow-wrap: anywhere; }
+        .context-comment { border-left: 3px solid #4A90D9; padding-left: 10px; margin: 8px 0; }
+        .summary-steps { margin: 0 0 12px 20px; color: #b8c4cf; font-size: .8rem; line-height: 1.6; }
         .summary-warnings { white-space: pre-wrap; color: #f1bd72 !important; }
         .context-copy { width: 100%; min-height: 180px; background: #0f0f23; color: #ddd;
                         border: 1px solid #34485b; border-radius: 6px; padding: 8px; margin-top: 12px; }
@@ -279,25 +283,32 @@
             <p id="syncDetail"></p>
         </div>
         <section class="summary-panel" aria-labelledby="summaryHeading">
-            <h2 id="summaryHeading">Resumen de los cambios de estado de hoy</h2>
-            <p>Consulta el historial real de las incidencias sincronizadas de tus filtros activos.
-               Incluye las que han salido del filtro. «Hoy» se calcula con la hora del equipo donde corre JiraBoard.</p>
+            <h2 id="summaryHeading">Contexto: cambios de hoy y abiertas pendientes</h2>
+            <p>Incluye las incidencias modificadas hoy y las que siguen abiertas, aunque no hayan cambiado hoy,
+               de tus filtros activos ya sincronizados. Para cada una: origen, enlace, descripción,
+               cambios registrados y los cinco últimos comentarios accesibles, con su texto completo.</p>
+            <ol class="summary-steps">
+                <li>Pulsa <strong>Obtener y copiar contexto</strong> y espera a que termine la consulta a Jira.</li>
+                <li>Abre tú el chat que quieras utilizar y pega el texto con <strong>Ctrl+V</strong>.</li>
+                <li>Pulsa <strong>Enviar</strong> en ese chat: el texto ya pide el resumen. Esta página no abre ni envía nada a ningún chat.</li>
+            </ol>
             <div class="summary-actions">
-                <button id="prepareSummaryBtn" class="btn btn-secondary" type="button">Preparar contexto de hoy</button>
-                <button id="copySummaryBtn" class="btn btn-secondary" type="button" hidden>Copiar para este chat</button>
-                <button id="sendSummaryBtn" class="btn btn-primary" type="button" hidden>Enviar a un chat nuevo en VS Code</button>
+                <button id="prepareSummaryBtn" class="btn btn-primary" type="button">📋 Obtener y copiar contexto</button>
+                <button id="copySummaryBtn" class="btn btn-secondary" type="button" hidden>Volver a copiar contexto</button>
             </div>
             <p id="summaryStatus" role="status" aria-live="polite">
-                Sincroniza primero para incluir nuevas incidencias. El destino se configura en el panel de escritorio.
+                Sincroniza primero si quieres incluir incidencias nuevas. «Hoy» usa la hora del equipo de JiraBoard.
             </p>
             <p id="summaryWarnings" class="summary-warnings" hidden></p>
             <ul id="summaryIssues" class="summary-list" hidden></ul>
             <p id="summaryPrivacy" hidden>
-                El contexto contiene enlaces, títulos, descripciones, transiciones y una muestra de comentarios; no las credenciales.
-                Para continuar en este mismo chat, cópialo y pégalo aquí. El envío automático abre un chat en VS Code,
-                no selecciona una conversación existente por ID.
+                Revisa el texto antes de compartirlo: contiene información de tus incidencias, pero no las credenciales de conexión.
+                No se guarda en un fichero ni se envía automáticamente a ningún servicio de IA.
             </p>
-            <textarea id="summaryCopyFallback" class="context-copy" aria-label="Contexto para copiar manualmente" readonly hidden></textarea>
+            <details id="summaryPreview" hidden>
+                <summary>Ver el contexto completo que se copia</summary>
+                <textarea id="summaryCopyFallback" class="context-copy" aria-label="Contexto completo para copiar y pegar" readonly></textarea>
+            </details>
         </section>
         <div class="toolbar">
             <input type="text" id="filterInput" placeholder="Filtrar por texto (título, clave, descripción, columna, estado)...">
@@ -354,7 +365,6 @@
         document.getElementById("syncBtn").addEventListener("click", syncJira);
         document.getElementById("prepareSummaryBtn").addEventListener("click", prepareSummary);
         document.getElementById("copySummaryBtn").addEventListener("click", copySummary);
-        document.getElementById("sendSummaryBtn").addEventListener("click", sendSummary);
         document.getElementById("resultsGrid").addEventListener("click", event => {
             const button = event.target.closest("[data-copy-title]");
             if (button) copyTitle(Number(button.dataset.copyTitle));
@@ -414,10 +424,12 @@
             preparedSummary = null;
             const button = document.getElementById("prepareSummaryBtn");
             button.disabled = true;
-            button.textContent = "Consultando historiales…";
-            ["copySummaryBtn", "sendSummaryBtn", "summaryIssues", "summaryWarnings", "summaryPrivacy", "summaryCopyFallback"]
+            button.textContent = "Consultando incidencias y comentarios…";
+            ["copySummaryBtn", "summaryIssues", "summaryWarnings", "summaryPrivacy", "summaryPreview"]
                 .forEach(id => { document.getElementById(id).hidden = true; });
-            document.getElementById("summaryStatus").textContent = "Consultando Jira; todavía no se está enviando nada a Copilot.";
+            document.getElementById("summaryCopyFallback").value = "";
+            document.getElementById("summaryPreview").open = false;
+            document.getElementById("summaryStatus").textContent = "Consultando origen, historial y últimos comentarios en Jira. No se está enviando nada a ningún chat.";
             try {
                 const response = await fetch("/api/daily-summary", {
                     method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
@@ -427,8 +439,12 @@
                 preparedSummary = data;
                 const report = data.report;
                 const status = document.getElementById("summaryStatus");
-                status.textContent = `${report.date} (${report.timezone}): ${report.issue_count} incidencia${report.issue_count === 1 ? '' : 's'} con ${report.change_count} cambio${report.change_count === 1 ? '' : 's'} de estado confirmado${report.change_count === 1 ? '' : 's'}. `
+                status.textContent = `${report.date} (${report.timezone}): ${report.issue_count} incidencias en el contexto; ${report.changed_issue_count} modificadas hoy, ${report.pending_count} abiertas pendientes y ${report.comment_count} comentarios recuperados. `
                     + (report.warnings.length ? "Resultado parcial; revisa los avisos." : "");
+                if (!report.issue_count) {
+                    status.textContent += report.tracked ? " No se han encontrado cambios de hoy ni pendientes confirmadas."
+                        : " No hay incidencias sincronizadas de filtros activos. Sincroniza Jira primero.";
+                }
                 const warnings = document.getElementById("summaryWarnings");
                 warnings.textContent = report.warnings.join("\n");
                 warnings.hidden = !report.warnings.length;
@@ -439,31 +455,54 @@
                     const title = document.createElement("strong");
                     title.textContent = `${issue.instance} · ${issue.key} — ${issue.title}`;
                     li.appendChild(title);
+                    const appendLine = (container, label, value) => {
+                        const line = document.createElement("small");
+                        line.textContent = `${label}: ${value || "No consta"}`;
+                        container.appendChild(line);
+                    };
+                    const origin = issue.origin || {};
+                    appendLine(li, "Incluida por", [issue.updated_today || issue.changes.length || (issue.other_changes || []).length ? "Cambios de hoy" : "",
+                        issue.pending === true ? "Abierta pendiente" : issue.pending === null ? "Pendiente de confirmar" : "Resuelta"].filter(Boolean).join(" · "));
+                    appendLine(li, "Origen", [origin.jira, origin.project_key, origin.project_name, origin.filter_name].filter(Boolean).join(" / "));
+                    appendLine(li, "Estado actual", issue.current_status);
                     issue.changes.forEach(change => {
                         const line = document.createElement("small");
                         line.textContent = `${change.at.substring(11, 19)}: ${change.from ?? "(vacío)"} → ${change.to ?? "(vacío)"}${change.author ? ` · ${change.author}` : ""}`;
                         li.appendChild(line);
                     });
+                    const details = document.createElement("details");
+                    const heading = document.createElement("summary");
+                    heading.textContent = `Ver descripción y últimos comentarios (${(issue.comments || []).length}${issue.comments_total != null ? ` de ${issue.comments_total}` : ''})`;
+                    details.appendChild(heading);
+                    appendLine(details, "Enlace incluido en el contexto", issue.url);
+                    appendLine(details, "Creada", origin.created);
+                    appendLine(details, "Solicitante", origin.reporter);
+                    appendLine(details, "Asignada a", issue.assignee);
+                    const description = document.createElement("p");
+                    description.className = "context-description";
+                    description.textContent = issue.description || "Jira no tiene descripción informada.";
+                    details.appendChild(description);
+                    (issue.other_changes || []).forEach(change => appendLine(details, `Cambio ${change.field} (${change.at})`, `${change.from ?? '(vacío)'} → ${change.to ?? '(vacío)'}`));
+                    (issue.comments || []).forEach(comment => {
+                        const paragraph = document.createElement("p");
+                        paragraph.className = "context-comment";
+                        paragraph.textContent = `${comment.created} · ${comment.author || 'Autor no informado'}\n${comment.body}`;
+                        details.appendChild(paragraph);
+                    });
+                    if (!issue.latest_comments_complete) appendLine(details, "Aviso", "No se pudo confirmar la consulta de los últimos comentarios.");
+                    else if (!(issue.comments || []).length) appendLine(details, "Comentarios", "No hay comentarios accesibles en Jira.");
+                    li.appendChild(details);
                     list.appendChild(li);
                 });
                 list.hidden = !report.issue_count;
                 document.getElementById("copySummaryBtn").hidden = !report.issue_count;
                 document.getElementById("summaryPrivacy").hidden = !report.issue_count;
                 if (report.issue_count) {
-                    try {
-                        const capabilityResponse = await fetch("/api/copilot/status", { cache: "no-store" });
-                        if (!capabilityResponse.ok) throw new Error("Detección no disponible");
-                        const capability = await capabilityResponse.json();
-                        const sendButton = document.getElementById("sendSummaryBtn");
-                        sendButton.hidden = capability.target !== "vscode_new";
-                        sendButton.disabled = !capability.can_send;
-                        status.textContent += capability.target === "clipboard"
-                            ? " Destino: copiar y pegar en este u otro chat existente."
-                            : capability.can_send ? " VS Code detectado: puedes enviar el contexto."
-                                : " VS Code no está disponible; puedes copiar el contexto o abrirlo y preparar de nuevo.";
-                    } catch (_) {
-                        status.textContent += " No se pudo detectar VS Code. Puedes copiar el contexto.";
-                    }
+                    document.getElementById("summaryCopyFallback").value = preparedSummary.prompt;
+                    document.getElementById("summaryPreview").hidden = false;
+                    const copied = await copySummary();
+                    status.textContent += copied ? " Copiado. Abre el chat que elijas, pega (Ctrl+V) y pulsa Enviar."
+                        : " Contexto listo. Pulsa Volver a copiar contexto o selecciónalo debajo y usa Ctrl+C.";
                 }
             } catch (error) {
                 document.getElementById("summaryStatus").textContent = error.message || "Error al preparar el contexto.";
@@ -471,41 +510,25 @@
             } finally {
                 summaryPreparing = false;
                 button.disabled = false;
-                button.textContent = "Preparar contexto de hoy";
+                button.textContent = "📋 Obtener y copiar contexto";
             }
         }
 
         async function copySummary() {
-            if (!preparedSummary) return;
+            if (!preparedSummary) return false;
             try {
                 await copyText(preparedSummary.prompt);
-                showToast("Contexto copiado. Pégalo en este chat o en la conversación que elijas.");
+                showToast("Contexto copiado. Abre el chat que elijas, pega con Ctrl+V y pulsa Enviar.");
+                return true;
             } catch (_) {
                 const field = document.getElementById("summaryCopyFallback");
                 field.value = preparedSummary.prompt;
-                field.hidden = false;
+                document.getElementById("summaryPreview").hidden = false;
+                document.getElementById("summaryPreview").open = true;
                 field.focus();
                 field.select();
-                showToast("Pulsa Ctrl+C para copiar y pégalo en el chat elegido.", true);
-            }
-        }
-
-        async function sendSummary() {
-            if (!preparedSummary) return;
-            if (!confirm(`Se enviará a Copilot en VS Code el contexto de ${preparedSummary.report.issue_count} incidencias. Se abrirá un chat nuevo, no necesariamente este. ¿Continuar?`)) return;
-            const button = document.getElementById("sendSummaryBtn");
-            button.disabled = true;
-            try {
-                const response = await fetch(`/api/daily-summary/${preparedSummary.report_id}/send`, {
-                    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}"
-                });
-                const data = await response.json();
-                if (!response.ok || !data.ok) throw new Error(data.error || "No se pudo enviar a VS Code");
-                document.getElementById("summaryStatus").textContent = data.message;
-                showToast(data.message);
-            } catch (error) {
-                showToast(error.message || "No se pudo enviar a VS Code", true);
-                document.getElementById("summaryStatus").textContent = error.message;
+                showToast("El navegador no permitió copiar automáticamente. Pulsa Ctrl+C o Volver a copiar contexto.", true);
+                return false;
             }
         }
 

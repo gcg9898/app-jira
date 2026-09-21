@@ -13,7 +13,7 @@ flask.log
 # Capturas de pantalla generadas
 screenshots/
 
-# Contexto privado generado para resumir incidencias en Copilot
+# Contexto privado de versiones anteriores (ya no se generan ficheros de chat)
 copilot-context/
 
 # Python

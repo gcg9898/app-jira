@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
-from chat_handoff import SUMMARY_TARGETS, get_summary_target, save_summary_target, vscode_status
+from version_compare import clean_version, compare_versions, same_version
 
 if getattr(sys, 'frozen', False):
     _env_data = os.environ.get("JIRABOARD_DATA_DIR")
@@ -451,12 +451,9 @@ def get_local_version():
     vf = _BUNDLE_DIR / "version.txt"
     if vf.exists():
         try:
-            return vf.read_text(encoding="utf-8").strip()
-        except (UnicodeDecodeError, ValueError):
-            try:
-                return vf.read_text(encoding="utf-8-sig").strip()
-            except Exception:
-                return None
+            return clean_version(vf.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError, ValueError):
+            return None
     return None
 
 
@@ -469,6 +466,7 @@ def get_remote_version():
         req = Request(GITHUB_EXE_COMMITS_URL, headers={
             "User-Agent": "JiraBoard-Updater",
             "Accept": "application/vnd.github.v3+json",
+            "Cache-Control": "no-cache",
         })
         with urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -476,44 +474,35 @@ def get_remote_version():
                 return data[0]["parents"][0]["sha"][:7]
             # If no parent (initial commit), use the commit itself
             return data[0]["sha"][:7]
-    except (URLError, HTTPError, OSError, KeyError, IndexError):
+    except (URLError, HTTPError, OSError, KeyError, IndexError, ValueError, TypeError):
         return None
 
 
-def _fetch_remote_changelog_text():
-    """Baja CHANGELOG.txt del repo. Devuelve el texto o None.
-
-    Se pide por la API de contenidos y NO por raw.githubusercontent.com: ese
-    dominio sirve contenido cacheado (CDN y/o proxy corporativo) y devolvia el
-    changelog de hace meses aunque el commit estuviera subido, con lo que las
-    novedades al actualizar siempre salian desfasadas. La API devuelve siempre
-    lo que hay en la rama.
-    """
+def _fetch_remote_changelog_text(remote_ver):
+    """Changelog del commit incluido en el EXE publicado, no del master futuro."""
     import base64
     import json
 
-    api = (f"https://api.github.com/repos/{GITHUB_REPO}/contents/CHANGELOG.txt"
-           f"?ref={GITHUB_BRANCH}")
+    ref = clean_version(remote_ver)
+    if not ref:
+        return None
+    api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/CHANGELOG.txt?ref={ref}"
     try:
         req = Request(api, headers={
             "User-Agent": "JiraBoard-Updater",
             "Accept": "application/vnd.github.v3+json",
+            "Cache-Control": "no-cache",
         })
         with urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        if data.get("content"):
-            return base64.b64decode(data["content"]).decode("utf-8", "replace")
-        # Repos grandes devuelven el contenido vacio y un enlace de descarga.
-        if data.get("download_url"):
-            req2 = Request(data["download_url"], headers={"User-Agent": "JiraBoard-Updater"})
-            with urlopen(req2, timeout=10) as resp2:
-                return resp2.read().decode("utf-8", "replace")
-    except (URLError, HTTPError, OSError, ValueError, KeyError):
+        if isinstance(data, dict) and data.get("content"):
+            return base64.b64decode(data["content"]).decode("utf-8-sig", "replace")
+    except (URLError, HTTPError, OSError, ValueError, KeyError, TypeError):
         pass
 
     # Ultimo recurso por si la API estuviera limitada por rate limit.
     try:
-        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{GITHUB_BRANCH}/CHANGELOG.txt"
+        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/{ref}/CHANGELOG.txt"
         req = Request(url, headers={"User-Agent": "JiraBoard-Updater",
                                     "Cache-Control": "no-cache"})
         with urlopen(req, timeout=10) as resp:
@@ -523,49 +512,12 @@ def _fetch_remote_changelog_text():
 
 
 def get_remote_changelog(local_ver, remote_ver, include_current=False):
-    """Devuelve las entradas del changelog que son novedad para el usuario.
+    """Devuelve el changelog completo publicado, sin usar sus títulos como versiones.
 
-    - Si se encuentra la version local, se devuelven todas las que hay por
-      encima de ella.
-    - Las entradas marcadas [pendiente] son, por definicion, posteriores a
-      cualquier version publicada, asi que siempre cuentan como novedad. Sin
-      esto no se veian nunca, porque solo se casaba por hash de commit y las
-      entradas se escriben como [pendiente] hasta que se publican.
-    - Si no se encuentra la version local, se devuelve la entrada mas reciente.
+    El llamador comprueba primero que la remota sea posterior. [pendiente] no
+    acredita antigüedad ni se usa para decidir si hay una actualización.
     """
-    content = _fetch_remote_changelog_text()
-    if not content:
-        return None
-
-    # Cada seccion empieza por [hash] o [pendiente], de mas nueva a mas vieja.
-    import re
-    sections = re.split(r'(?=^\[)', content, flags=re.MULTILINE)
-    parsed = []
-    for section in sections:
-        match = re.match(r'\[([a-zA-Z0-9_-]+)\]', section)
-        if match:
-            parsed.append((match.group(1), section.strip()))
-
-    if not parsed:
-        return None
-
-    local_idx = None
-    for i, (ver, _) in enumerate(parsed):
-        if ver == local_ver:
-            local_idx = i
-            break
-
-    if local_idx is not None and local_idx > 0:
-        return "\n\n".join(text for _, text in parsed[:local_idx])
-
-    if local_idx is None:
-        # Version local desconocida en el changelog: al menos se muestran las
-        # entradas pendientes de publicar, que son las novedades reales.
-        pendientes = [text for ver, text in parsed if ver.lower() == "pendiente"]
-        if pendientes:
-            return "\n\n".join(pendientes)
-
-    return parsed[0][1]
+    return _fetch_remote_changelog_text(remote_ver)
 
 
 def _get_exe_download_url():
@@ -1415,89 +1367,6 @@ class JiraManagerDialog(tk.Toplevel):
         threading.Thread(target=run, daemon=True).start()
 
 
-class SummarySettingsDialog(tk.Toplevel):
-    """Configuración del destino, sin fingir acceso a la lista de chats de VS Code."""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.title("Resumen de incidencias con Copilot")
-        self.configure(bg=BG2)
-        self.transient(parent)
-        self.grab_set()
-        self.geometry("630x340")
-        self.minsize(590, 320)
-        self._probe_queue = None
-
-        content = tk.Frame(self, bg=BG2, padx=18, pady=16)
-        content.pack(fill="both", expand=True)
-        tk.Label(content, text="Destino del resumen", bg=BG2, fg=FG,
-                 font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 10))
-        self.target_combo = ttk.Combobox(content, state="readonly", values=list(SUMMARY_TARGETS.values()))
-        self.target_combo.pack(fill="x")
-        self.target_combo.set(SUMMARY_TARGETS[get_summary_target(DB_PATH)])
-        self.target_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_hint())
-        self.hint = tk.Label(content, bg=BG2, fg=FG_DIM, wraplength=550, justify="left", anchor="w")
-        self.hint.pack(fill="x", pady=12)
-        tk.Label(content, bg=BG2, fg="#888", wraplength=550, justify="left",
-                 text=("No hay un selector público de conversaciones por ID en la CLI. "
-                       "Para continuar en este mismo chat, elige copiar y pega el contexto en él. "
-                       "Nada se envía automáticamente por tener VS Code abierto.")).pack(fill="x")
-        self.probe_label = tk.Label(content, text="", bg=BG2, fg=FG_DIM, wraplength=550, justify="left")
-        self.probe_label.pack(anchor="w", pady=10)
-        buttons = tk.Frame(content, bg=BG2)
-        buttons.pack(fill="x", side="bottom")
-        self.probe_button = _btn(buttons, "Detectar VS Code", self.check_vscode)
-        self.probe_button.pack(side="left")
-        _btn(buttons, "Guardar", self.save, bg=ACCENT, fg=BG).pack(side="right")
-        _btn(buttons, "Cancelar", self.destroy).pack(side="right", padx=8)
-        self.refresh_hint()
-
-    def selected_target(self):
-        return next((key for key, label in SUMMARY_TARGETS.items() if label == self.target_combo.get()), "clipboard")
-
-    def refresh_hint(self):
-        text = ("Conserva este u otro chat: desde Últimas actualizaciones prepara el resumen, "
-                "copia el contexto y pégalo en la conversación elegida. Tú decides el chat exacto.")
-        if self.selected_target() == "vscode_new":
-            text = ("Envía el contexto a un chat nuevo en la última ventana activa de VS Code, "
-                    "en modo consulta (Ask). Requiere VS Code abierto y Copilot autenticado. "
-                    "No garantiza reutilizar la conversación que estés leyendo.")
-        self.hint.config(text=text)
-
-    def check_vscode(self):
-        import queue
-        self._probe_queue = queue.Queue()
-        self.probe_button.config(state="disabled")
-        self.probe_label.config(text="Comprobando VS Code…")
-        result_queue = self._probe_queue
-
-        def check():
-            result_queue.put(vscode_status(DB_PATH))
-
-        threading.Thread(target=check, daemon=True).start()
-        self.after(100, self._finish_probe)
-
-    def _finish_probe(self):
-        import queue
-        try:
-            result = self._probe_queue.get_nowait()
-        except queue.Empty:
-            self.after(100, self._finish_probe)
-            return
-        message = ("VS Code abierto y CLI localizada. La sesión de Copilot se comprueba en VS Code."
-                   if result["can_send"] else "VS Code o su CLI no están disponibles. Puedes usar Copiar contexto.")
-        self.probe_label.config(text=message)
-        self.probe_button.config(state="normal")
-
-    def save(self):
-        try:
-            save_summary_target(DB_PATH, self.selected_target())
-        except (OSError, sqlite3.Error, ValueError):
-            messagebox.showerror("Resumen", "No se pudo guardar el destino del resumen.", parent=self)
-            return
-        self.destroy()
-
-
 class LauncherApp:
     def __init__(self):
         self.root = tk.Tk()
@@ -1653,15 +1522,6 @@ class LauncherApp:
 
         self.refresh_jira_summary()
 
-        summary_frame = tk.Frame(root, bg=BG, padx=16, pady=12,
-                     highlightbackground=BORDER, highlightthickness=1)
-        summary_frame.pack(fill="x", padx=20, pady=(0, 12))
-        tk.Label(summary_frame, text="Resumen de incidencias con Copilot", bg=BG, fg=FG,
-             font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        tk.Label(summary_frame, text="Elige cómo llevar los cambios de hoy al chat.",
-             bg=BG, fg="#888", font=("Segoe UI", 8)).pack(anchor="w", pady=6)
-        _btn(summary_frame, "Configurar destino del resumen", self.open_summary_settings).pack(anchor="w")
-
         # Update frame
         upd_frame = tk.Frame(root, bg="#0f0f23", padx=16, pady=12,
                              highlightbackground="#2a2a4a", highlightthickness=1)
@@ -1677,7 +1537,7 @@ class LauncherApp:
                  font=("Segoe UI", 9, "bold")).grid(row=1, column=1, sticky="w", padx=(8, 0))
 
         self.update_status_label = tk.Label(upd_frame, text="", bg="#0f0f23", fg="#888",
-                                            font=("Segoe UI", 8))
+                                            font=("Segoe UI", 8), wraplength=330, justify="left")
         self.update_status_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         self.update_progress = ttk.Progressbar(upd_frame, length=200, mode="determinate")
@@ -1817,9 +1677,6 @@ class LauncherApp:
         if flask_proc and flask_proc.poll() is None:
             self.restart_flask()
 
-    def open_summary_settings(self):
-        self.root.wait_window(SummarySettingsDialog(self.root))
-
     def check_for_updates(self, auto_check=False):
         """Check GitHub for a newer version and offer to update."""
         self.update_btn.config(state="disabled", text="Comprobando...")
@@ -1827,25 +1684,30 @@ class LauncherApp:
         threading.Thread(target=self._check_update_worker, args=(auto_check,), daemon=True).start()
 
     def _check_update_worker(self, auto_check=False):
+        relation = "unknown"
         try:
             local_ver = get_local_version()
             remote_ver = get_remote_version()
-            changelog = get_remote_changelog(local_ver, remote_ver) if remote_ver else None
+            relation = compare_versions(local_ver, remote_ver,
+                                        repo_dir=None if getattr(sys, 'frozen', False) else _BUNDLE_DIR,
+                                        github_repo=GITHUB_REPO)
+            changelog = get_remote_changelog(local_ver, remote_ver) if relation == "remote_ahead" else None
         except Exception:
             local_ver = get_local_version()
             remote_ver = None
             changelog = None
-        self.root.after(0, self._handle_update_result, local_ver, remote_ver, changelog, auto_check)
+            relation = "unknown"
+        self.root.after(0, self._handle_update_result, local_ver, remote_ver, changelog, auto_check, relation)
 
-    def _handle_update_result(self, local_ver, remote_ver, changelog=None, auto_check=False):
+    def _handle_update_result(self, local_ver, remote_ver, changelog=None, auto_check=False, relation=None):
         # Always re-enable the button first, no matter what happens below
         self.update_btn.config(state="normal", text="\U0001F504 Comprobar actualizaciones")
         try:
-            self._handle_update_result_inner(local_ver, remote_ver, changelog, auto_check)
+            self._handle_update_result_inner(local_ver, remote_ver, changelog, auto_check, relation)
         except Exception:
             self.update_status_label.config(text="Error al comprobar actualizaciones.", fg="#e74c3c")
 
-    def _handle_update_result_inner(self, local_ver, remote_ver, changelog=None, auto_check=False):
+    def _handle_update_result_inner(self, local_ver, remote_ver, changelog=None, auto_check=False, relation=None):
 
         if remote_ver is None:
             self.update_status_label.config(
@@ -1853,24 +1715,30 @@ class LauncherApp:
                 fg="#e74c3c")
             return
 
-        is_new = local_ver is None or local_ver != remote_ver
-
-        if is_new:
+        relation = relation or ("equal" if same_version(local_ver, remote_ver) else "unknown")
+        if relation == "remote_ahead":
             self.update_status_label.config(
                 text=f"Nueva versión disponible: {remote_ver}",
                 fg="#f5a623")
             should_update = self._show_changelog_and_ask(changelog, remote_ver)
             if should_update:
                 self._start_download()
-        else:
+        elif relation == "equal":
             self.update_status_label.config(
                 text=f"Ya tienes la última versión ({local_ver})",
                 fg="#16c79a")
-            # On startup auto-check, don't show dialog if already up to date
-            if not auto_check:
-                should_reinstall = self._show_changelog_and_ask(changelog, local_ver, is_current=True)
-                if should_reinstall:
-                    self._start_download()
+        elif relation == "local_ahead":
+            self.update_status_label.config(
+                text=f"Tu versión local ({local_ver}) es posterior a la publicada ({remote_ver}). No hay que actualizar.",
+                fg="#16c79a")
+        elif relation == "diverged":
+            self.update_status_label.config(
+                text=f"Local {local_ver} y publicada {remote_ver} son ramas divergentes. No se ofrece actualización automática.",
+                fg="#f5a623")
+        else:
+            self.update_status_label.config(
+                text=f"Local: {local_ver or 'desconocida'} · Publicada: {remote_ver}. No se pudo comprobar cuál es posterior; no se actualizará.",
+                fg="#f5a623")
 
     def _show_changelog_and_ask(self, changelog, remote_ver, is_current=False):
         """Show changelog in a dialog and ask whether to update. Returns True if user wants to update."""

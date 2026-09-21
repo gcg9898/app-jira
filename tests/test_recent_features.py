@@ -1,11 +1,8 @@
-"""API local, destino de resumen y sincronización: datos y procesos aislados."""
+"""API de contexto para copiar y sincronización: datos y procesos aislados."""
 
 import atexit
-import copy
 import importlib
-import json
 import os
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -14,7 +11,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import chat_handoff
 
 TEST_DATA = tempfile.TemporaryDirectory(prefix="jiraboard-tests-")
 atexit.register(TEST_DATA.cleanup)
@@ -24,32 +20,38 @@ with patch.dict(os.environ, {"JIRABOARD_DATA_DIR": TEST_DATA.name}):
 
 def sample_report():
     return {"date": datetime.now().date().isoformat(), "timezone": "test", "warnings": [],
-            "issue_count": 1, "change_count": 1,
+            "issue_count": 1, "change_count": 1, "pending_count": 1,
+            "changed_issue_count": 1, "comment_count": 1, "tracked": 1,
             "issues": [{"key": "TEST-1", "title": "Incidencia", "url": "https://jira.example.test/browse/TEST-1",
-                        "changes": [{"from": "Abierto", "to": "En curso"}]}]}
+                "description": "Problema comunicado", "origin": {"jira": "Test", "reporter": "Solicitante"},
+                "pending": True, "updated_today": True,
+                "comments": [{"author": "Analista", "created": "2026-09-21T10:00:00Z", "body": "Último comentario"}],
+                "changes": [{"from": "Abierto", "to": "En curso"}]}]}
 
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.client = jb.app.test_client()
-        jb._daily_reports.clear()
         jb._sync_progress.update(running=False, phase="idle")
-        chat_handoff.save_summary_target(jb.DB_PATH, "clipboard")
 
     def prepare(self):
         with patch.object(jb, "collect_today_changes", return_value=sample_report()):
             return self.client.post("/api/daily-summary", json={})
 
     def test_prepare_returns_preview_without_launching_code(self):
-        with patch.object(jb, "send_summary") as send:
+        with patch("subprocess.Popen") as process, patch("subprocess.run") as run:
             result = self.prepare()
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json["report"]["issue_count"], 1)
         self.assertIn("no instrucciones", result.json["prompt"])
+        self.assertIn("Problema comunicado", result.json["prompt"])
+        self.assertIn("Último comentario", result.json["prompt"])
+        self.assertNotIn("report_id", result.json)
         self.assertIn("no-store", result.headers["Cache-Control"])
-        send.assert_not_called()
+        process.assert_not_called()
+        run.assert_not_called()
 
-    def test_bridge_rejects_lan_foreign_origin_and_non_json(self):
+    def test_context_rejects_lan_foreign_origin_and_non_json(self):
         self.assertEqual(self.client.post("/api/daily-summary", json={},
                          environ_overrides={"REMOTE_ADDR": "192.168.1.30"}).status_code, 403)
         self.assertEqual(self.client.post("/api/daily-summary", json={},
@@ -58,40 +60,33 @@ class ApiTests(unittest.TestCase):
                          base_url="http://untrusted.example").status_code, 403)
         self.assertEqual(self.client.post("/api/daily-summary", data="x=y").status_code, 415)
 
-    def test_must_opt_in_to_new_chat_in_tkinter_settings(self):
-        identifier = self.prepare().json["report_id"]
-        with patch.object(jb, "send_summary") as send:
-            result = self.client.post(f"/api/daily-summary/{identifier}/send", json={})
-        self.assertEqual(result.status_code, 409)
-        send.assert_not_called()
+    def test_chat_routes_have_been_removed(self):
+        self.assertEqual(self.client.get("/api/copilot/status").status_code, 404)
+        self.assertEqual(self.client.post("/api/daily-summary/anything/send", json={}).status_code, 404)
+        self.assertFalse(hasattr(jb, "send_summary"))
 
-    def test_send_only_known_report_once_and_no_command_from_request(self):
-        chat_handoff.save_summary_target(jb.DB_PATH, "vscode_new")
-        identifier = self.prepare().json["report_id"]
-        with patch.object(jb, "send_summary") as send:
-            result = self.client.post(f"/api/daily-summary/{identifier}/send", json={"command": "malicious"})
-            again = self.client.post(f"/api/daily-summary/{identifier}/send", json={})
-        self.assertEqual(result.status_code, 200)
-        self.assertEqual(again.status_code, 409)
-        send.assert_called_once_with(sample_report(), jb._DATA_DIR)
+    def test_migration_removes_only_old_chat_preference(self):
+        conn = jb.get_db()
+        conn.execute("CREATE TABLE IF NOT EXISTS app_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT OR REPLACE INTO app_preferences VALUES ('summary_target', 'vscode_new')")
+        conn.execute("INSERT OR REPLACE INTO app_preferences VALUES ('other_setting', 'keep')")
+        conn.commit()
+        conn.close()
+        jb.migrate_db()
+        conn = jb.get_db()
+        try:
+            self.assertIsNone(conn.execute("SELECT 1 FROM app_preferences WHERE key='summary_target'").fetchone())
+            self.assertEqual(conn.execute("SELECT value FROM app_preferences WHERE key='other_setting'").fetchone()[0], "keep")
+        finally:
+            conn.close()
 
-    def test_unknown_expired_and_empty_reports_are_not_sent(self):
-        chat_handoff.save_summary_target(jb.DB_PATH, "vscode_new")
-        self.assertEqual(self.client.post("/api/daily-summary/unknown/send", json={}).status_code, 410)
-        identifier = self.prepare().json["report_id"]
-        jb._daily_reports[identifier]["created"] -= 901
-        self.assertEqual(self.client.post(f"/api/daily-summary/{identifier}/send", json={}).status_code, 410)
-        identifier = self.prepare().json["report_id"]
-        jb._daily_reports[identifier]["report"]["issues"] = []
-        self.assertEqual(self.client.post(f"/api/daily-summary/{identifier}/send", json={}).status_code, 409)
-
-    def test_failed_send_is_not_reported_as_success(self):
-        chat_handoff.save_summary_target(jb.DB_PATH, "vscode_new")
-        identifier = self.prepare().json["report_id"]
-        with patch.object(jb, "send_summary", side_effect=RuntimeError("VS Code no disponible")):
-            result = self.client.post(f"/api/daily-summary/{identifier}/send", json={})
-        self.assertEqual(result.status_code, 503)
-        self.assertFalse(jb._daily_reports[identifier]["sent"])
+    def test_context_failure_releases_prepare_lock(self):
+        with jb.app.test_request_context("/api/daily-summary", method="POST", json={},
+                                         environ_overrides={"REMOTE_ADDR": "127.0.0.1"}), \
+             patch.object(jb, "collect_today_changes", side_effect=RuntimeError("test")):
+            with self.assertRaises(RuntimeError):
+                jb.prepare_daily_summary()
+        self.assertFalse(jb._daily_prepare_lock.locked())
 
     def test_parallel_sync_is_rejected_and_errors_reset_progress(self):
         jb._sync_progress.update(running=True, phase="screenshots")
@@ -119,13 +114,20 @@ class ApiTests(unittest.TestCase):
         finally:
             jb._daily_prepare_lock.release()
 
-    def test_page_exposes_sync_copy_and_manual_chat_option(self):
+    def test_page_exposes_sync_and_copy_only(self):
         response = self.client.get("/recent")
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
-        for marker in ("syncBtn", "data-copy-title", "prepareSummaryBtn", "Copiar para este chat"):
+        for marker in ("syncBtn", "data-copy-title", "prepareSummaryBtn", "Obtener y copiar contexto", "Ctrl+V"):
             self.assertIn(marker, html)
         self.assertNotIn("jiraitsm.eulen.com/browse", html)
+        for marker in ("sendSummaryBtn", "Copiar para este chat", "/api/copilot/status", "preparedSummary.report_id"):
+            self.assertNotIn(marker, html)
+
+    def test_launcher_has_no_chat_configuration(self):
+        import launcher
+        self.assertFalse(hasattr(launcher, "SummarySettingsDialog"))
+        self.assertFalse(hasattr(launcher.LauncherApp, "open_summary_settings"))
 
 
 class JobScopeTests(unittest.TestCase):
@@ -150,6 +152,8 @@ class JobScopeTests(unittest.TestCase):
             conn.close()
         jobs = jb._daily_summary_jobs()
         self.assertEqual({t["jira_key"] for t in jobs[0]["tasks"]}, {"TEST-1", "TEST-2"})
+        self.assertEqual(jobs[0]["tasks"][0]["filter_name"], "Active")
+        self.assertIn("Cerrado", jobs[0]["resolved_statuses"])
 
 
 class CloudSearchTests(unittest.TestCase):
@@ -168,41 +172,6 @@ class CloudSearchTests(unittest.TestCase):
         session.post.side_effect = [first, last]
         self.assertEqual(jb._fetch_issues_cloud(session, "https://example.atlassian.net", "filter=1", ["status"]),
                          [{"key": "TEST-1"}])
-
-
-class HandoffTests(unittest.TestCase):
-    def test_preferences_default_and_roundtrip(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "prefs.db"
-            self.assertEqual(chat_handoff.get_summary_target(path), "clipboard")
-            chat_handoff.save_summary_target(path, "vscode_new")
-            self.assertEqual(chat_handoff.get_summary_target(path), "vscode_new")
-            with self.assertRaises(ValueError):
-                chat_handoff.save_summary_target(path, "nonexistent-chat-id")
-
-    def test_launch_uses_json_attachment_no_shell_and_ask_mode(self):
-        with tempfile.TemporaryDirectory() as directory, \
-             patch.object(chat_handoff, "_vscode_command", return_value=["Code.exe", "cli.js"]), \
-             patch.object(chat_handoff, "_process_open", return_value=True), \
-             patch.object(chat_handoff.subprocess, "run", side_effect=[
-                 MagicMock(returncode=0, stdout=b"--add-file --reuse-window"), MagicMock(returncode=0)]) as run:
-            report = copy.deepcopy(sample_report())
-            report["issues"][0]["title"] = 'No ejecutar & echo injected %PATH%'
-            path = chat_handoff.send_summary(report, directory)
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), report)
-            command = run.call_args.args[0]
-            self.assertIn("ask", command)
-            self.assertIn("--add-file", command)
-            self.assertIn(str(path.resolve()), command)
-            self.assertNotIn(report["issues"][0]["title"], " ".join(command))
-            self.assertFalse(run.call_args.kwargs["shell"])
-
-    def test_closed_vscode_does_not_launch_or_create_context(self):
-        with patch.object(chat_handoff, "_vscode_command", return_value=None), \
-             patch.object(chat_handoff.subprocess, "run") as run:
-            with self.assertRaises(RuntimeError):
-                chat_handoff.send_summary(sample_report(), TEST_DATA.name)
-            run.assert_not_called()
 
 
 if __name__ == "__main__":

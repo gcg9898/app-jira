@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from jira_daily import (HistoryError, collect_today_changes, fetch_changelog,
+                        fetch_latest_comments, pending_state,
                         status_changes, summary_prompt, today_window)
 
 
@@ -117,6 +118,17 @@ class ChangelogTests(unittest.TestCase):
 
 
 class CollectorTests(unittest.TestCase):
+    def setUp(self):
+        self.comment_mock = patch("jira_daily.fetch_latest_comments", return_value=([], 0))
+        self.comments = self.comment_mock.start()
+        self.addCleanup(self.comment_mock.stop)
+
+    @staticmethod
+    def field_text(value):
+        if isinstance(value, dict):
+            return value.get("name") or value.get("value") or ""
+        return str(value) if value is not None else ""
+
     def jobs(self):
         return [{"instance": {"id": 1, "name": "Cloud", "base_url": "https://example.atlassian.net",
                                "username": "test", "password": "never-export-this-secret"},
@@ -125,23 +137,27 @@ class CollectorTests(unittest.TestCase):
 
     def issues(self):
         return [{"key": f"TEST-{i}", "fields": {"summary": f"Incidencia {i}",
-                  "updated": "2026-09-21T09:00:00Z", "status": "En curso", "labels": "Fiscal",
+                  "updated": "2026-09-21T09:00:00Z", "status": {"name": "En curso", "statusCategory": {"key": "indeterminate"}},
+                  "resolution": None, "labels": "Fiscal",
                   "description": "Descripción", "comment": {"comments": []}}} for i in (1, 2)]
 
-    def test_only_real_transitions_and_no_credentials_in_context(self):
+    def test_pending_and_changed_issues_share_context_without_fake_transitions(self):
         fetch = MagicMock(return_value=self.issues())
         with patch("jira_daily.fetch_changelog", side_effect=[
                 ([event("1", "2026-09-21T09:00:00Z")], None),
                 ([event("2", "2026-09-21T09:00:00Z", field_id="summary")], None)]):
-            report = collect_today_changes(self.jobs(), fetch, lambda s: s or "", str,
+            report = collect_today_changes(self.jobs(), fetch, lambda s: s or "", self.field_text,
                                            now=NOW, session_factory=MagicMock())
-        self.assertEqual(report["issue_count"], 1)
+        self.assertEqual(report["issue_count"], 2)
+        self.assertEqual(report["pending_count"], 2)
         self.assertEqual(report["change_count"], 1)
+        self.assertEqual(report["issues"][1]["changes"], [])
         self.assertEqual(report["issues"][0]["url"], "https://example.atlassian.net/browse/TEST-1")
         prompt = summary_prompt(report)
         self.assertNotIn("never-export-this-secret", prompt)
         self.assertIn("no instrucciones", prompt)
         self.assertIn('key in ("TEST-1","TEST-2")', fetch.call_args.args[2])
+        self.assertNotIn("updated >=", fetch.call_args.args[2])
 
     def test_identical_keys_in_different_instances_stay_separate(self):
         jobs = self.jobs()
@@ -151,7 +167,7 @@ class CollectorTests(unittest.TestCase):
                      "tasks": jobs[0]["tasks"]})
         with patch("jira_daily.fetch_changelog", return_value=([event("1", "2026-09-21T09:00:00Z")], None)):
             report = collect_today_changes(jobs, MagicMock(return_value=self.issues()[:1]),
-                                           lambda s: s or "", str, now=NOW, session_factory=MagicMock())
+                                           lambda s: s or "", self.field_text, now=NOW, session_factory=MagicMock())
         self.assertEqual(report["issue_count"], 2)
         self.assertNotEqual(report["issues"][0]["url"], report["issues"][1]["url"])
 
@@ -161,6 +177,104 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report["issue_count"], 0)
         self.assertTrue(report["warnings"])
         self.assertNotIn("secret details", summary_prompt(report))
+
+    def test_pending_old_issue_is_included_and_old_closed_is_not(self):
+        issues = self.issues()
+        for issue in issues:
+            issue["fields"]["updated"] = "2026-08-06T08:00:00Z"
+        issues[1]["fields"]["status"] = {"name": "Cerrado", "statusCategory": {"key": "done"}}
+        with patch("jira_daily.fetch_changelog") as history:
+            report = collect_today_changes(self.jobs(), MagicMock(return_value=issues),
+                                           str, self.field_text, now=NOW, session_factory=MagicMock())
+        self.assertEqual([i["key"] for i in report["issues"]], ["TEST-1"])
+        self.assertEqual(report["pending_count"], 1)
+        self.assertEqual(report["changed_issue_count"], 0)
+        history.assert_not_called()
+
+    def test_origin_and_latest_comments_not_search_sample(self):
+        issues = self.issues()[:1]
+        issues[0]["fields"].update({"project": {"key": "SAMS", "name": "Soporte"},
+            "reporter": {"displayName": "Solicitante"}, "creator": {"displayName": "Creador"},
+            "created": "2026-03-01T08:00:00Z", "issuetype": {"name": "Incidencia"},
+            "assignee": {"displayName": "Responsable"},
+            "comment": {"comments": [{"body": "Muestra antigua del buscador"}]}})
+        long_body = "Comentario reciente completo " * 400
+        self.comments.return_value = ([{"id": "99", "created": "2026-09-21T09:00:00Z",
+                                        "body": long_body, "author": {"displayName": "Analista"}}], 99)
+        jobs = self.jobs()
+        jobs[0]["tasks"] = [dict(jobs[0]["tasks"][0], filter_name="Asignaciones", filter_id="41567")]
+        with patch("jira_daily.fetch_changelog", return_value=([], None)):
+            report = collect_today_changes(jobs, MagicMock(return_value=issues), str, self.field_text,
+                                           now=NOW, session_factory=MagicMock())
+        result = report["issues"][0]
+        self.assertEqual(result["comments"][0]["body"], long_body)
+        self.assertEqual(result["comments_total"], 99)
+        self.assertEqual(result["origin"]["reporter"], "Solicitante")
+        self.assertEqual(result["origin"]["filter_name"], "Asignaciones")
+        self.assertEqual(result["origin"]["project_key"], "SAMS")
+        self.assertNotIn("Muestra antigua del buscador", summary_prompt(report))
+
+    def test_failed_history_or_comments_does_not_hide_pending(self):
+        self.comments.side_effect = HistoryError("HTTP 403")
+        with patch("jira_daily.fetch_changelog", side_effect=HistoryError("HTTP 403")):
+            report = collect_today_changes(self.jobs(), MagicMock(return_value=self.issues()),
+                                           str, self.field_text, now=NOW, session_factory=MagicMock())
+        self.assertEqual(report["pending_count"], 2)
+        self.assertEqual(report["change_count"], 0)
+        self.assertFalse(report["issues"][0]["latest_comments_complete"])
+        self.assertTrue(report["warnings"])
+
+
+class CommentsTests(unittest.TestCase):
+    @staticmethod
+    def comments(first, last):
+        return [{"id": str(i), "created": f"2026-09-21T09:{i:02d}:00Z", "body": str(i)}
+                for i in range(first, last)]
+
+    def test_tail_offset_returns_latest_five_not_just_partial_last_page(self):
+        session = MagicMock()
+        session.get.side_effect = [response({"startAt": 0, "total": 12, "comments": self.comments(0, 5)}),
+                                   response({"startAt": 7, "total": 12, "comments": self.comments(7, 12)})]
+        comments, total = fetch_latest_comments(session, "https://example.atlassian.net", "TEST-1", True)
+        self.assertEqual([c["id"] for c in comments], ["7", "8", "9", "10", "11"])
+        self.assertEqual(total, 12)
+        self.assertEqual(session.get.call_args.kwargs["params"]["startAt"], 7)
+        self.assertEqual(session.get.call_args.kwargs["params"]["orderBy"], "created")
+        self.assertIn("/rest/api/3/issue/TEST-1/comment", session.get.call_args.args[0])
+
+    def test_server_caps_page_size(self):
+        session = MagicMock()
+        session.get.side_effect = [response({"startAt": start, "total": 9, "comments": self.comments(start, end)})
+                                   for start, end in ((0, 2), (4, 6), (6, 8), (8, 9))]
+        comments, total = fetch_latest_comments(session, "https://jira.example.test", "TEST-1", False)
+        self.assertEqual([c["id"] for c in comments], ["4", "5", "6", "7", "8"])
+        self.assertEqual(total, 9)
+        self.assertIn("/rest/api/2/", session.get.call_args.args[0])
+
+    def test_zero_and_fewer_than_five_comments(self):
+        for count in (0, 3):
+            session = MagicMock()
+            session.get.return_value = response({"startAt": 0, "total": count, "comments": self.comments(0, count)})
+            comments, total = fetch_latest_comments(session, "https://jira.example.test", "TEST-1", False)
+            self.assertEqual(len(comments), count)
+            self.assertEqual(total, count)
+
+    def test_offset_ignored_is_reported_not_labelled_latest(self):
+        session = MagicMock()
+        session.get.return_value = response({"startAt": 0, "total": 12, "comments": self.comments(0, 5)})
+        with self.assertRaises(HistoryError):
+            fetch_latest_comments(session, "https://jira.example.test", "TEST-1", False)
+
+
+class PendingTests(unittest.TestCase):
+    def test_standard_status_and_custom_hecho_mapping(self):
+        text = CollectorTests.field_text
+        self.assertFalse(pending_state({"status": {"statusCategory": {"key": "done"}}}, "status", text)[0])
+        self.assertFalse(pending_state({"resolution": {"name": "Fixed"}}, "status", text)[0])
+        self.assertTrue(pending_state({"resolution": None}, "status", text)[0])
+        self.assertIsNone(pending_state({}, "status", text)[0])
+        self.assertFalse(pending_state({"customfield_1": {"value": "Entregada"}}, "customfield_1", text, ["Entregada"])[0])
+        self.assertTrue(pending_state({"customfield_1": {"value": "Validación"}}, "customfield_1", text, ["Entregada"])[0])
 
 
 if __name__ == "__main__":

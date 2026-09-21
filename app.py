@@ -7,8 +7,6 @@ import sys
 import json
 import sqlite3
 import threading
-import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -18,7 +16,6 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 import requests as req_lib
 import urllib3
 from jira_daily import collect_today_changes, summary_prompt
-from chat_handoff import get_summary_target, send_summary, vscode_status
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Frozen (PyInstaller) vs normal execution path resolution
@@ -48,9 +45,6 @@ _sync_progress = {
 }
 _sync_start_lock = threading.Lock()
 _daily_prepare_lock = threading.Lock()
-_daily_reports_lock = threading.Lock()
-_daily_reports = {}
-_DAILY_REPORT_TTL = 15 * 60
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURACIÓN JIRA (desde .env)
@@ -353,6 +347,9 @@ def migrate_db():
         conn.execute("ALTER TABLE jira_filters ADD COLUMN status_field TEXT DEFAULT ''")
     if "category_field" not in filt_cols:
         conn.execute("ALTER TABLE jira_filters ADD COLUMN category_field TEXT DEFAULT ''")
+    # El contexto solo se copia; ya no hay un destino de chat configurado.
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='app_preferences'").fetchone():
+        conn.execute("DELETE FROM app_preferences WHERE key = 'summary_target'")
     _seed_jira_config(conn)
     conn.commit()
     conn.close()
@@ -474,11 +471,11 @@ def screenshot_progress():
 
 
 def _local_summary_access():
-    """El puente de escritorio no es accesible desde la LAN ni desde otra web."""
+    """El contexto privado no es accesible desde la LAN ni desde otra web."""
     hosts = {"localhost", "127.0.0.1", "::1"}
     if (request.remote_addr not in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
             or urlsplit(request.host_url).hostname not in hosts):
-        return jsonify({"error": "Abre JiraBoard en localhost para usar el resumen de escritorio."}), 403
+        return jsonify({"error": "Abre JiraBoard en localhost para obtener el contexto."}), 403
     origin = request.headers.get("Origin")
     if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
         return jsonify({"error": "Origen no permitido."}), 403
@@ -491,9 +488,14 @@ def _daily_summary_jobs():
     conn = get_db()
     try:
         jobs = []
+        resolved_statuses = [r["label"] for r in conn.execute("""
+            SELECT cf.label FROM column_filters cf, columns c
+             WHERE cf.column_id = c.id AND LOWER(c.name) = 'hecho'
+        """)]
         for instance, _filters in get_jira_sources(conn):
             tasks = conn.execute("""
-                SELECT t.jira_key, f.status_field, f.category_field
+                SELECT t.jira_key, f.status_field, f.category_field,
+                       f.name AS filter_name, f.filter_id
                   FROM tasks t, jira_filters f
                  WHERE t.jira_instance_id = ?
                    AND f.id = t.jira_filter_id AND f.instance_id = t.jira_instance_id
@@ -501,7 +503,8 @@ def _daily_summary_jobs():
                    AND COALESCE(t.jira_key, '') <> ''
             """, (instance["id"],)).fetchall()
             if tasks:
-                jobs.append({"instance": dict(instance), "tasks": [dict(t) for t in tasks]})
+                jobs.append({"instance": dict(instance), "tasks": [dict(t) for t in tasks],
+                             "resolved_statuses": resolved_statuses})
         return jobs
     finally:
         conn.close()
@@ -522,61 +525,11 @@ def prepare_daily_summary():
         prompt = summary_prompt(report)
         if len(prompt.encode("utf-8")) > 2_000_000:
             return jsonify({"error": "El contexto es demasiado grande. Selecciona menos filtros para el resumen."}), 413
-        report_id = uuid.uuid4().hex
-        with _daily_reports_lock:
-            expired = [key for key, value in _daily_reports.items()
-                       if time.monotonic() - value["created"] >= _DAILY_REPORT_TTL]
-            for key in expired:
-                del _daily_reports[key]
-            while len(_daily_reports) >= 8:
-                del _daily_reports[next(iter(_daily_reports))]
-            _daily_reports[report_id] = {"created": time.monotonic(), "report": report, "sent": False}
-        response = jsonify({"ok": True, "report_id": report_id, "report": report, "prompt": prompt})
+        response = jsonify({"ok": True, "report": report, "prompt": prompt})
         response.headers["Cache-Control"] = "no-store"
         return response
     finally:
         _daily_prepare_lock.release()
-
-
-@app.route("/api/copilot/status", methods=["GET"])
-def copilot_status():
-    denied = _local_summary_access()
-    if denied is not None:
-        return denied
-    response = jsonify(vscode_status(DB_PATH))
-    response.headers["Cache-Control"] = "no-store"
-    return response
-
-
-@app.route("/api/daily-summary/<report_id>/send", methods=["POST"])
-def send_daily_summary(report_id):
-    denied = _local_summary_access()
-    if denied is not None:
-        return denied
-    if get_summary_target(DB_PATH) != "vscode_new":
-        return jsonify({"error": "El destino configurado es copiar para un chat existente."}), 409
-    with _daily_reports_lock:
-        saved = _daily_reports.get(report_id)
-        if not saved or time.monotonic() - saved["created"] >= _DAILY_REPORT_TTL:
-            return jsonify({"error": "El contexto ha caducado. Vuelve a preparar los cambios de hoy."}), 410
-        if saved["report"]["date"] != datetime.now().date().isoformat():
-            return jsonify({"error": "Ha cambiado el día. Vuelve a preparar el resumen."}), 410
-        if saved["sent"] or saved.get("sending"):
-            return jsonify({"error": "Este contexto ya se ha enviado o está enviándose. Revisa VS Code."}), 409
-        if not saved["report"]["issues"]:
-            return jsonify({"error": "No hay cambios de estado confirmados que enviar."}), 409
-        saved["sending"] = True
-    try:
-        send_summary(saved["report"], _DATA_DIR)
-        with _daily_reports_lock:
-            saved["sent"] = True
-        return jsonify({"ok": True, "message": "Solicitud enviada a VS Code. El resumen se responde en su chat."})
-    except (RuntimeError, OSError) as exc:
-        message = str(exc) if isinstance(exc, RuntimeError) else "No se pudo guardar el contexto local."
-        return jsonify({"error": message}), 503
-    finally:
-        with _daily_reports_lock:
-            saved["sending"] = False
 
 
 @app.route("/screenshots/<path:filename>")
