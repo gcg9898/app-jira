@@ -99,6 +99,7 @@
                          border-radius: 10px; background: #141e30; }
         .summary-panel h2 { font-size: 1rem; color: #b5d5ee; margin-bottom: 8px; }
         .summary-panel p { font-size: .8rem; line-height: 1.5; color: #b8c4cf; margin-bottom: 10px; }
+        #summaryStatus { margin-top: 10px; }
         .summary-actions { display: flex; gap: 8px; flex-wrap: wrap; }
         .summary-list { list-style: none; max-height: 300px; overflow-y: auto; margin: 12px 0; }
         .summary-list li { border-top: 1px solid #2a3b50; padding: 8px 0; font-size: .85rem; }
@@ -286,7 +287,7 @@
                 <button id="copySummaryBtn" class="btn btn-secondary" type="button" hidden>Copiar para este chat</button>
                 <button id="sendSummaryBtn" class="btn btn-primary" type="button" hidden>Enviar a un chat nuevo en VS Code</button>
             </div>
-            <p id="summaryStatus" role="status" aria-live="polite" style="margin-top:10px;">
+            <p id="summaryStatus" role="status" aria-live="polite">
                 Sincroniza primero para incluir nuevas incidencias. El destino se configura en el panel de escritorio.
             </p>
             <p id="summaryWarnings" class="summary-warnings" hidden></p>
@@ -426,7 +427,7 @@
                 preparedSummary = data;
                 const report = data.report;
                 const status = document.getElementById("summaryStatus");
-                status.textContent = `${report.date} (${report.timezone}): ${report.issue_count} incidencias con ${report.change_count} cambios de estado confirmados. `
+                status.textContent = `${report.date} (${report.timezone}): ${report.issue_count} incidencia${report.issue_count === 1 ? '' : 's'} con ${report.change_count} cambio${report.change_count === 1 ? '' : 's'} de estado confirmado${report.change_count === 1 ? '' : 's'}. `
                     + (report.warnings.length ? "Resultado parcial; revisa los avisos." : "");
                 const warnings = document.getElementById("summaryWarnings");
                 warnings.textContent = report.warnings.join("\n");

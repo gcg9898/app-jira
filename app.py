@@ -568,7 +568,8 @@ def send_daily_summary(report_id):
         saved["sending"] = True
     try:
         send_summary(saved["report"], _DATA_DIR)
-        saved["sent"] = True
+        with _daily_reports_lock:
+            saved["sent"] = True
         return jsonify({"ok": True, "message": "Solicitud enviada a VS Code. El resumen se responde en su chat."})
     except (RuntimeError, OSError) as exc:
         message = str(exc) if isinstance(exc, RuntimeError) else "No se pudo guardar el contexto local."
@@ -1382,23 +1383,31 @@ def _fetch_issues_cloud(session, base_url, jql, campos):
     Atlassian retiro GET/POST /rest/api/2|3/search el 1 de mayo de 2025. El
     sustituto /rest/api/3/search/jql pagina con un cursor (nextPageToken) en vez
     de startAt y no devuelve 'total', asi que se itera hasta que deja de mandar
-    token. El limite de paginas evita un bucle infinito si el token se repitiera.
+    token. Nunca se devuelve una lista parcial como si estuviera completa.
     """
     issues = []
     payload = {"jql": jql, "maxResults": 100, "fields": campos}
+    seen_tokens = set()
     for _ in range(200):
         resp = session.post(f"{base_url}/rest/api/3/search/jql",
                             json=payload, timeout=30)
         if resp.status_code != 200:
             raise RuntimeError(_jira_error(resp, base_url))
         data = resp.json()
-        page = data.get("issues", [])
+        if not isinstance(data, dict) or not isinstance(data.get("issues"), list):
+            raise RuntimeError("Jira Cloud devolvió una página de incidencias no válida")
+        page = data["issues"]
         issues.extend(page)
         token = data.get("nextPageToken")
-        if not token or not page:
-            break
+        if data.get("isLast") is True or not token:
+            if data.get("isLast") is False:
+                raise RuntimeError("Jira Cloud no devolvió el cursor de la siguiente página")
+            return issues
+        if not isinstance(token, str) or token in seen_tokens:
+            raise RuntimeError("Jira Cloud repitió o devolvió un cursor no válido")
+        seen_tokens.add(token)
         payload["nextPageToken"] = token
-    return issues
+    raise RuntimeError("No se completó la paginación de Jira Cloud; no se guardarán resultados parciales")
 
 
 def _fetch_issues(session, base_url, jql, is_cloud=False, extra_fields=None):

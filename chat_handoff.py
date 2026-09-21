@@ -55,10 +55,11 @@ def _vscode_command():
         if found:
             candidates.append(Path(found))
     if sys.platform == "win32":
-        for base in (os.environ.get("LOCALAPPDATA"), os.environ.get("ProgramFiles")):
+        for base, suffix in ((os.environ.get("LOCALAPPDATA"), "Programs"),
+                             (os.environ.get("ProgramFiles"), "")):
             if not base:
                 continue
-            root = Path(base) / "Programs" if "localappdata" in base.lower() or base == os.environ.get("LOCALAPPDATA") else Path(base)
+            root = Path(base) / suffix
             for product, cli in (("Microsoft VS Code", "code.cmd"), ("Microsoft VS Code Insiders", "code-insiders.cmd")):
                 candidates.append(root / product / "bin" / cli)
     for cli in candidates:

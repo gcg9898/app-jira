@@ -139,6 +139,8 @@ def status_changes(histories, field_id, start, end, field_name=None):
             if not matches:
                 continue
             before_id, after_id = item.get("from"), item.get("to")
+            before_id = str(before_id) if before_id is not None else None
+            after_id = str(after_id) if after_id is not None else None
             before, after = item.get("fromString"), item.get("toString")
             if before_id is not None and after_id is not None and before_id == after_id:
                 continue

@@ -75,6 +75,12 @@ class StatusChangesTests(unittest.TestCase):
         self.assertEqual(changes, [])
         self.assertEqual(len(warnings), 1)
 
+    def test_numeric_and_string_status_ids_are_equivalent(self):
+        same_status = event("1", "2026-09-21T08:00:00Z")
+        same_status["items"][0].update({"from": 3, "to": "3"})
+        changes, _ = status_changes([same_status], "status", self.start, self.end)
+        self.assertEqual(changes, [])
+
 
 class ChangelogTests(unittest.TestCase):
     def test_cloud_paginates_with_actual_page_size(self):

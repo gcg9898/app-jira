@@ -107,6 +107,18 @@ class ApiTests(unittest.TestCase):
                 jb.sync_jira()
         self.assertFalse(jb._sync_progress["running"])
 
+    def test_prepare_during_sync_or_another_prepare_leaves_locks_intact(self):
+        jb._sync_progress.update(running=True, phase="fetching")
+        self.assertEqual(self.client.post("/api/daily-summary", json={}).status_code, 409)
+        self.assertFalse(jb._daily_prepare_lock.locked())
+        jb._sync_progress["running"] = False
+        jb._daily_prepare_lock.acquire()
+        try:
+            self.assertEqual(self.client.post("/api/daily-summary", json={}).status_code, 409)
+            self.assertTrue(jb._daily_prepare_lock.locked())
+        finally:
+            jb._daily_prepare_lock.release()
+
     def test_page_exposes_sync_copy_and_manual_chat_option(self):
         response = self.client.get("/recent")
         self.assertEqual(response.status_code, 200)
@@ -138,6 +150,24 @@ class JobScopeTests(unittest.TestCase):
             conn.close()
         jobs = jb._daily_summary_jobs()
         self.assertEqual({t["jira_key"] for t in jobs[0]["tasks"]}, {"TEST-1", "TEST-2"})
+
+
+class CloudSearchTests(unittest.TestCase):
+    def test_repeated_cursor_is_error_not_partial_success(self):
+        session = MagicMock()
+        session.post.return_value = MagicMock(status_code=200)
+        session.post.return_value.json.return_value = {"issues": [{"key": "TEST-1"}], "nextPageToken": "same"}
+        with self.assertRaises(RuntimeError):
+            jb._fetch_issues_cloud(session, "https://example.atlassian.net", "filter=1", ["status"])
+
+    def test_empty_page_with_cursor_continues(self):
+        first, last = MagicMock(status_code=200), MagicMock(status_code=200)
+        first.json.return_value = {"issues": [], "nextPageToken": "next"}
+        last.json.return_value = {"issues": [{"key": "TEST-1"}], "isLast": True}
+        session = MagicMock()
+        session.post.side_effect = [first, last]
+        self.assertEqual(jb._fetch_issues_cloud(session, "https://example.atlassian.net", "filter=1", ["status"]),
+                         [{"key": "TEST-1"}])
 
 
 class HandoffTests(unittest.TestCase):
