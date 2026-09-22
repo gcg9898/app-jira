@@ -1188,12 +1188,15 @@
             else if (p.includes("low") || p.includes("baja"))
                 priorityClass = "priority-low";
 
-            const jiraUrl = task.jira_url || (task.jira_key ? `https://jiraitsm.eulen.com/browse/${task.jira_key}` : "");
+            const jiraUrl = task.jira_url || "";
             // El origen sólo aporta información cuando hay más de un Jira configurado
             const originTag = (jiraInstances.length > 1 && task.jira_instance_name)
                 ? `<span class="jira-origin" style="background:${task.jira_instance_color || '#4A90D9'}22;color:${task.jira_instance_color || '#4A90D9'};border:1px solid ${task.jira_instance_color || '#4A90D9'}55;">${escapeHtml(task.jira_instance_name)}</span> `
                 : "";
-            const jiraBadge = task.jira_key ? `${originTag}<span class="jira-badge">${task.jira_key}</span> <a href="${jiraUrl}" target="_blank" style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>` : "";
+            const jiraLink = jiraUrl ? `<a class="jira-link" href="${escapeHtml(jiraUrl)}" target="_blank" rel="noopener noreferrer"
+                draggable="false" onclick="event.stopPropagation()" title="Abrir ${escapeHtml(task.jira_key)} en Jira"
+                style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link ↗</a>` : "";
+            const jiraBadge = task.jira_key ? `${originTag}<span class="jira-badge">${escapeHtml(task.jira_key)}</span> ${jiraLink}` : "";
             const linkUrl = task.link && !task.link.startsWith("https://") ? "https://" + task.link : task.link;
             const linkHtml = task.link ? `<a href="${escapeHtml(linkUrl)}" target="_blank" style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>` : "";
             const lastComment = task.last_comment ? `<div class="last-comment">${escapeHtml(task.last_comment.substring(0, 100))}</div>` : "";

@@ -9,7 +9,7 @@ import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from flask import Flask, render_template, request, jsonify, send_from_directory
 
@@ -406,7 +406,15 @@ def _attach_origin(task_dict, imap):
     key = task_dict.get("jira_key") or ""
     task_dict["jira_instance_name"] = inst["name"] if inst else ""
     task_dict["jira_instance_color"] = inst["color"] if inst else ""
-    task_dict["jira_url"] = f"{inst['base_url']}/browse/{key}" if inst and key else ""
+    task_dict["jira_url"] = ""
+    if inst and key:
+        base_url = (inst["base_url"] or "").rstrip("/")
+        try:
+            parsed = urlsplit(base_url)
+            if parsed.scheme in ("https", "http") and parsed.hostname and not (parsed.username or parsed.password):
+                task_dict["jira_url"] = f"{base_url}/browse/{quote(key, safe='')}"
+        except ValueError:
+            pass
     return task_dict
 
 

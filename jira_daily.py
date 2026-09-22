@@ -7,6 +7,7 @@ from datetime import datetime, time, timedelta
 from urllib.parse import quote, urlsplit
 
 import requests
+from jira_tls import request_error_detail, use_system_certificates
 
 
 ISSUE_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*-\d+\Z")
@@ -309,16 +310,21 @@ def collect_today_changes(jobs, fetch_issues, text_value, field_value, now=None,
         extra_fields = sorted(set(extra_fields) | {"created", "project", "issuetype", "reporter", "creator", "assignee", "resolution"})
         with session_factory() as session:
             session.auth = (instance["username"], instance["password"])
-            # Igual que el conector existente para los certificados internos.
-            # Cloud usa la validación HTTPS habitual de requests.
-            session.verify = cloud
+            if cloud:
+                # Windows confía en las CA corporativas que certifi no conoce.
+                # Mantener TLS verificado también al consultar el contexto.
+                use_system_certificates(session)
+            else:
+                # Mantener la política existente del conector Server interno.
+                session.verify = False
             session.headers.update({"Accept": "application/json"})
             field_names = {}
             if any((task.get("status_field") or "status") != "status" for task in config.values()):
                 try:
                     field_names = _field_names(session, base_url)
-                except (HistoryError, requests.RequestException):
-                    report["warnings"].append(f"{instance['name']}: los campos de estado solo se identificarán por ID.")
+                except (HistoryError, requests.RequestException) as exc:
+                    detail = str(exc) if isinstance(exc, HistoryError) else request_error_detail(exc)
+                    report["warnings"].append(f"{instance['name']}: los campos de estado solo se identificarán por ID ({detail}).")
             keys = sorted(config)
             seen_keys = set()
             for offset in range(0, len(keys), 50):
@@ -328,7 +334,7 @@ def collect_today_changes(jobs, fetch_issues, text_value, field_value, now=None,
                 try:
                     issues = fetch_issues(session, base_url, jql, cloud, extra_fields)
                 except (RuntimeError, ValueError, requests.RequestException) as exc:
-                    report["warnings"].append(f"{instance['name']}: no se pudo consultar un lote ({type(exc).__name__}).")
+                    report["warnings"].append(f"{instance['name']}: no se pudo consultar un lote: {request_error_detail(exc)}.")
                     continue
                 missing = set(keys[offset:offset + 50]) - {str(i.get("key", "")).upper() for i in issues}
                 if missing:
@@ -363,7 +369,7 @@ def collect_today_changes(jobs, fetch_issues, text_value, field_value, now=None,
                                     warnings.append("No se han podido identificar por nombre todos los cambios del campo personalizado.")
                             history_complete = not warnings
                         except (HistoryError, requests.RequestException) as exc:
-                            message = str(exc) if isinstance(exc, HistoryError) else "Error de conexión al consultar el historial"
+                            message = str(exc) if isinstance(exc, HistoryError) else request_error_detail(exc)
                             warnings.append(message)
                             history_complete = False
                     if not (changes or other_changes or updated_today or pending is not False):
@@ -376,7 +382,7 @@ def collect_today_changes(jobs, fetch_issues, text_value, field_value, now=None,
                         comments, comments_total = fetch_latest_comments(session, base_url, key, cloud)
                         comments_complete = True
                     except (HistoryError, requests.RequestException) as exc:
-                        message = str(exc) if isinstance(exc, HistoryError) else "Error de conexión con Jira"
+                        message = str(exc) if isinstance(exc, HistoryError) else request_error_detail(exc)
                         warnings.append(f"No se pudieron recuperar los últimos comentarios: {message}.")
                     project = fields.get("project") or {}
                     origin = {"jira": instance["name"], "project_key": project.get("key", ""),

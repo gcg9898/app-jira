@@ -278,7 +278,7 @@
             if (!text) return "";
             const d = document.createElement("div");
             d.textContent = text;
-            return d.innerHTML;
+            return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
         }
 
         function highlight(text, query) {
@@ -337,11 +337,11 @@
             else if (p.includes("high") || p.includes("alta") || p.includes("critical")) priorityClass = "priority-high";
             else if (p.includes("low") || p.includes("baja")) priorityClass = "priority-low";
 
-            const jiraBadge = task.jira_key
-                ? `<span class="jira-badge">${escapeHtml(task.jira_key)}</span>
-                   <a href="${escapeHtml(task.jira_url || ('https://jiraitsm.eulen.com/browse/' + task.jira_key))}" target="_blank"
-                      style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link</a>`
-                : "";
+            const jiraLink = task.jira_key && task.jira_url
+                ? `<a class="jira-link" href="${escapeHtml(task.jira_url)}" target="_blank" rel="noopener noreferrer"
+                      title="Abrir ${escapeHtml(task.jira_key)} en Jira"
+                      style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link ↗</a>` : "";
+            const jiraBadge = task.jira_key ? `<span class="jira-badge">${escapeHtml(task.jira_key)}</span> ${jiraLink}` : "";
 
             const columnBadge = task.column_name
                 ? `<span class="column-badge">📋 ${escapeHtml(task.column_name)}</span>`

@@ -121,6 +121,8 @@ class ApiTests(unittest.TestCase):
         for marker in ("syncBtn", "data-copy-title", "prepareSummaryBtn", "Obtener y copiar contexto", "Ctrl+V"):
             self.assertIn(marker, html)
         self.assertNotIn("jiraitsm.eulen.com/browse", html)
+        self.assertIn('class="jira-link"', html)
+        self.assertIn('rel="noopener noreferrer"', html)
         for marker in ("sendSummaryBtn", "Copiar para este chat", "/api/copilot/status", "preparedSummary.report_id"):
             self.assertNotIn(marker, html)
 
@@ -172,6 +174,23 @@ class CloudSearchTests(unittest.TestCase):
         session.post.side_effect = [first, last]
         self.assertEqual(jb._fetch_issues_cloud(session, "https://example.atlassian.net", "filter=1", ["status"]),
                          [{"key": "TEST-1"}])
+
+
+class IssueLinkTests(unittest.TestCase):
+    def test_link_uses_own_instance_and_encodes_key(self):
+        instances = {1: {"name": "Cloud", "base_url": "https://cloud.atlassian.net/", "color": "#fff"},
+                     2: {"name": "Server", "base_url": "https://jira.example.test/context", "color": "#fff"}}
+        cloud = jb._attach_origin({"jira_key": "SAMS-170", "jira_instance_id": 1}, instances)
+        server = jb._attach_origin({"jira_key": "SAMS-170", "jira_instance_id": 2}, instances)
+        self.assertEqual(cloud["jira_url"], "https://cloud.atlassian.net/browse/SAMS-170")
+        self.assertEqual(server["jira_url"], "https://jira.example.test/context/browse/SAMS-170")
+        special = jb._attach_origin({"jira_key": 'TEST-1"', "jira_instance_id": 1}, instances)
+        self.assertTrue(special["jira_url"].endswith("TEST-1%22"))
+
+    def test_unknown_instance_and_unsafe_scheme_have_no_guessed_link(self):
+        self.assertEqual(jb._attach_origin({"jira_key": "SAMS-170"}, {})["jira_url"], "")
+        instances = {1: {"name": "Test", "base_url": "javascript:alert(1)", "color": "#fff"}}
+        self.assertEqual(jb._attach_origin({"jira_key": "TEST-1", "jira_instance_id": 1}, instances)["jira_url"], "")
 
 
 if __name__ == "__main__":

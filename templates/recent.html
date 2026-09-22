@@ -139,6 +139,9 @@
             margin-bottom: 6px;
             text-decoration: none;
         }
+        .jira-link { font-size: .75rem; color: #7db4ea; margin-left: 6px; font-weight: 600; }
+        .jira-link:hover { color: #16c79a; }
+        .jira-link:focus-visible { outline: 2px solid #16c79a; outline-offset: 3px; }
         .task-card .task-title {
             font-weight: 600;
             font-size: 0.9rem;
@@ -331,7 +334,7 @@
             if (!text) return "";
             const d = document.createElement("div");
             d.textContent = text;
-            return d.innerHTML;
+            return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
         }
 
         // Same helper as board.html: extract text after "Descripción de la incidencia:"
@@ -680,6 +683,10 @@
             const jiraBadge = task.jira_key
                 ? `<span class="jira-badge">${escapeHtml(task.jira_key)}</span>`
                 : `<span class="jira-badge" style="background:#666;">manual</span>`;
+            const jiraLink = task.jira_key && task.jira_url
+                ? `<a class="jira-link" href="${escapeHtml(task.jira_url)}" target="_blank" rel="noopener noreferrer"
+                      title="Abrir ${escapeHtml(task.jira_key)} en Jira" aria-label="Abrir ${escapeHtml(task.jira_key)} en Jira">link ↗</a>`
+                : "";
 
             const columnBadge = task._col_name
                 ? `<span class="column-badge">📋 ${escapeHtml(task._col_name)}</span>`
@@ -719,7 +726,7 @@
 
             return `
                 <div class="task-card" data-task-id="${task.id}">
-                    ${jiraBadge} ${columnBadge} ${updatedBadge}
+                    ${jiraBadge} ${jiraLink} ${columnBadge} ${updatedBadge}
                     <div class="title-row">
                         <div class="task-title">${title}</div>
                         <button type="button" class="btn btn-secondary copy-title" data-copy-title="${task.id}">📋 Copiar título</button>

@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -122,6 +123,9 @@ class CollectorTests(unittest.TestCase):
         self.comment_mock = patch("jira_daily.fetch_latest_comments", return_value=([], 0))
         self.comments = self.comment_mock.start()
         self.addCleanup(self.comment_mock.stop)
+        self.tls_mock = patch("jira_daily.use_system_certificates")
+        self.configure_tls = self.tls_mock.start()
+        self.addCleanup(self.tls_mock.stop)
 
     @staticmethod
     def field_text(value):
@@ -177,6 +181,17 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(report["issue_count"], 0)
         self.assertTrue(report["warnings"])
         self.assertNotIn("secret details", summary_prompt(report))
+
+    def test_cloud_context_uses_system_ca_and_reports_ssl_without_disabling_it(self):
+        sessions = MagicMock()
+        session = sessions.return_value.__enter__.return_value
+        fetch = MagicMock(side_effect=requests.exceptions.SSLError("private TLS details"))
+        report = collect_today_changes(self.jobs(), fetch, str, str, now=NOW, session_factory=sessions)
+        self.configure_tls.assert_called_once_with(session)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(report["issue_count"], 0)
+        self.assertIn("certificado SSL/TLS", report["warnings"][0])
+        self.assertNotIn("private TLS details", summary_prompt(report))
 
     def test_pending_old_issue_is_included_and_old_closed_is_not(self):
         issues = self.issues()

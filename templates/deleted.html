@@ -221,7 +221,7 @@
             if (!text) return "";
             const d = document.createElement("div");
             d.textContent = text;
-            return d.innerHTML;
+            return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
         }
 
         async function loadColumns() {
@@ -276,6 +276,10 @@
             const jiraBadge = task.jira_key
                 ? `<span class="jira-badge">${escapeHtml(task.jira_key)}</span>`
                 : "";
+            const jiraLink = task.jira_key && task.jira_url
+                ? `<a class="jira-link" href="${escapeHtml(task.jira_url)}" target="_blank" rel="noopener noreferrer"
+                      title="Abrir ${escapeHtml(task.jira_key)} en Jira"
+                      style="font-size:0.7rem;color:#4A90D9;text-decoration:none;font-weight:600;">link ↗</a>` : "";
 
             const columnOptions = columns.map(c =>
                 `<option value="${c.id}">${escapeHtml(c.name)}</option>`
@@ -283,7 +287,7 @@
 
             return `
                 <div class="task-card" id="card-${task.id}">
-                    ${jiraBadge}
+                    ${jiraBadge} ${jiraLink}
                     <div class="task-title">${escapeHtml(task.title)}</div>
                     ${task.description ? `<div class="task-desc">${escapeHtml(task.description.substring(0, 200))}</div>` : ""}
                     <div class="task-meta">
